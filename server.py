@@ -1,9 +1,14 @@
 
-import os, json, subprocess
-from typing import List
-from fastapi import FastAPI, Form, UploadFile, File
-from fastapi.responses import HTMLResponse
+import os, json, subprocess, hashlib, re, logging
+from typing import List, Optional
+from pathlib import Path
+from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from retrieval import load_chunks, SimpleIndex, format_citation, get_unique_sources, get_chunks_by_source, delete_source_chunks
 from score import score_answer
@@ -14,6 +19,62 @@ from ingest_docs import ingest_docs
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 app = FastAPI(title="RAG Talking Agent (with Ingest)")
 app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Pydantic models for input validation
+class AskRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=5000, description="Search query")
+    k: int = Field(8, ge=1, le=100, description="Number of results")
+    
+    @validator('query')
+    def validate_query(cls, v):
+        if not v.strip():
+            raise ValueError('Query cannot be empty')
+        return v.strip()
+
+class IngestURLRequest(BaseModel):
+    urls: str = Field(..., description="URLs, one per line")
+    language: str = Field("en", regex=r'^[a-z]{2}(-[A-Z]{2})?$', description="Language code")
+    
+    @validator('urls')
+    def validate_urls(cls, v):
+        lines = [u.strip() for u in v.splitlines() if u.strip()]
+        if len(lines) > 100:
+            raise ValueError('Maximum 100 URLs per request')
+        return v
+
+# Security configuration
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.md', '.markdown', '.txt', '.vtt', '.srt'}
+UPLOAD_DIR = Path("uploads")
+
+def sanitize_filename(filename: str) -> str:
+    """Remove path components and dangerous characters."""
+    name = os.path.basename(filename)
+    name = name.replace('/', '').replace('\\', '')
+    name = ''.join(c for c in name if c.isalnum() or c in '.-_')
+    if len(name) > 255:
+        name = name[:255]
+    return name
+
+def validate_file_type(filename: str) -> bool:
+    """Check if file extension is allowed."""
+    ext = Path(filename).suffix.lower()
+    return ext in ALLOWED_EXTENSIONS
+
+def generate_safe_filename(original_filename: str) -> str:
+    """Generate a safe, unique filename."""
+    sanitized = sanitize_filename(original_filename)
+    name_hash = hashlib.md5(sanitized.encode()).hexdigest()[:8]
+    return f"{name_hash}_{sanitized}"
 
 INDEX=None; CHUNKS=[]
 def _count_lines(path):
@@ -26,18 +87,36 @@ def _count_lines(path):
 def ensure_index():
     global INDEX, CHUNKS
     if INDEX is None:
-        if not os.path.exists(CHUNKS_PATH): raise RuntimeError(f"Missing {CHUNKS_PATH}. Ingest first.")
-        CHUNKS = load_chunks(CHUNKS_PATH)
-        if not CHUNKS: raise RuntimeError("No chunks loaded.")
-        INDEX = SimpleIndex(CHUNKS)
+        if not os.path.exists(CHUNKS_PATH):
+            logger.error(f"Index not found at {CHUNKS_PATH}")
+            raise HTTPException(status_code=404, detail="Index not found. Please ingest documents first.")
+        try:
+            CHUNKS = load_chunks(CHUNKS_PATH)
+        except Exception as e:
+            logger.error(f"Failed to load chunks: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to load index. Please try rebuilding.")
+        if not CHUNKS:
+            raise HTTPException(status_code=404, detail="Index is empty. Please ingest documents first.")
+        try:
+            INDEX = SimpleIndex(CHUNKS)
+        except Exception as e:
+            logger.error(f"Failed to build index: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to build search index.")
 
 @app.get("/")
 def root(): return HTMLResponse('<meta http-equiv="refresh" content="0; url=/app/">')
 
 @app.post("/ask")
-def ask(query: str = Form(...), k: int = Form(8)):
+@limiter.limit("30/minute")
+def ask(req: Request, query: str = Form(...), k: int = Form(8)):
+    # Validate input
+    try:
+        ask_req = AskRequest(query=query, k=k)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
     ensure_index()
-    ranked = INDEX.search(query, k=k)
+    ranked = INDEX.search(ask_req.query, k=ask_req.k)
     top = [CHUNKS[i] for i,_ in ranked]
     snippets = [c.get("content","").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]
@@ -78,44 +157,85 @@ def ask(query: str = Form(...), k: int = Form(8)):
 def stats():
     return {"count": _count_lines(CHUNKS_PATH), "path": CHUNKS_PATH}
 
+def validate_youtube_url(url: str) -> bool:
+    """Validate YouTube URL format."""
+    youtube_patterns = [
+        r'^https?://(www\.)?youtube\.com/watch\?v=[\w-]+',
+        r'^https?://(www\.)?youtube\.com/embed/[\w-]+',
+        r'^https?://youtu\.be/[\w-]+',
+    ]
+    return any(re.match(pattern, url) for pattern in youtube_patterns)
+
 @app.post("/api/ingest_urls")
 @app.post("/ingest/urls")
-def ingest_urls(urls: str = Form(...), language: str = Form("en")):
-    urls_list = [u.strip() for u in urls.splitlines() if u.strip()]
+@limiter.limit("10/hour")
+def ingest_urls(req: Request, urls: str = Form(...), language: str = Form("en")):
+    # Validate input
+    try:
+        url_req = IngestURLRequest(urls=urls, language=language)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    urls_list = [u.strip() for u in url_req.urls.splitlines() if u.strip()]
     results = []
     total = 0
+    
     for url in urls_list:
+        # Validate YouTube URL format
+        if not validate_youtube_url(url):
+            results.append({"url": url, "error": "Invalid YouTube URL format", "written": 0})
+            continue
         try:
-            r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=language)
+            r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=url_req.language)
             written = r.get("written", 0)
             if written == 0 and r.get("stderr"):
-                results.append({"url": url, "written": 0, "mode": "transcript", "error": r.get("stderr", "Unknown error")})
+                error_msg = r.get("stderr", "Unknown error")
+                logger.warning(f"YouTube ingestion failed for {url}: {error_msg}")
+                results.append({"url": url, "written": 0, "mode": "transcript", "error": error_msg})
             else:
                 results.append({"url": url, "written": written, "mode": "transcript"})
             total += written
         except Exception as e:
+            logger.error(f"Error ingesting YouTube URL {url}: {e}", exc_info=True)
             # fallback: fetch auto-captions via yt-dlp, then ingest .vtt
             vid = ""
             try:
-                vid = subprocess.check_output(["yt-dlp","--print","id","--skip-download",url], text=True).strip().splitlines()[0]
-            except Exception:
-                pass
+                vid = subprocess.check_output(
+                    ["yt-dlp", "--print", "id", "--skip-download", url],
+                    text=True,
+                    timeout=30,
+                    stderr=subprocess.DEVNULL
+                ).strip().splitlines()[0]
+            except subprocess.TimeoutExpired:
+                logger.warning(f"yt-dlp timeout for {url}")
+                vid = ""
+            except Exception as e:
+                logger.warning(f"yt-dlp failed for {url}: {e}")
+                vid = ""
             vtt = ""
             try:
-                subprocess.check_call(["yt-dlp","--skip-download","--write-auto-sub",
-                                       "--sub-lang", language, "--sub-format","vtt",
-                                       "-o","%(id)s.%(ext)s", url])
+                subprocess.check_call(
+                    ["yt-dlp", "--skip-download", "--write-auto-sub",
+                     "--sub-lang", url_req.language, "--sub-format", "vtt",
+                     "-o", "%(id)s.%(ext)s", url],
+                    timeout=60,
+                    stderr=subprocess.DEVNULL
+                )
                 candidates = []
                 if vid:
-                    candidates += [f"{vid}.{language}.vtt", f"{vid}.en.vtt", f"{vid}.en-US.vtt"]
+                    candidates += [f"{vid}.{url_req.language}.vtt", f"{vid}.en.vtt", f"{vid}.en-US.vtt"]
                 candidates += [p for p in os.listdir(".") if p.endswith(".vtt")]
                 for c in candidates:
                     if os.path.exists(c):
                         vtt = c; break
-            except Exception:
+            except subprocess.TimeoutExpired:
+                logger.warning(f"yt-dlp download timeout for {url}")
+                vtt = ""
+            except Exception as e:
+                logger.warning(f"yt-dlp download failed for {url}: {e}")
                 vtt = ""
             if vtt:
-                r = ingest_transcript(vtt, out_jsonl=CHUNKS_PATH, language=language)
+                r = ingest_transcript(vtt, out_jsonl=CHUNKS_PATH, language=url_req.language)
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
                 total += r.get("written",0)
             else:
@@ -125,26 +245,71 @@ def ingest_urls(urls: str = Form(...), language: str = Form("en")):
 
 @app.post("/api/ingest_files")
 @app.post("/ingest/files")
-async def ingest_files(files: List[UploadFile] = File(...), language: str = Form("en")):
-    os.makedirs("uploads", exist_ok=True)
+@limiter.limit("10/hour")
+async def ingest_files(req: Request, files: List[UploadFile] = File(...), language: str = Form("en")):
+    UPLOAD_DIR.mkdir(exist_ok=True)
     results = []
     total = 0
+    
     for f in files:
-        name = f.filename
-        path = os.path.join("uploads", name)
-        with open(path, "wb") as out: out.write(await f.read())
-        lower = name.lower()
+        # Validate file type
+        if not validate_file_type(f.filename):
+            results.append({
+                "file": f.filename,
+                "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            })
+            continue
+        
+        # Generate safe filename
+        safe_name = generate_safe_filename(f.filename)
+        path = UPLOAD_DIR / safe_name
+        
+        # Read file with size limit
+        content = b""
+        size = 0
         try:
-            if lower.endswith((".vtt",".srt",".txt")):
-                r = ingest_transcript(path, out_jsonl=CHUNKS_PATH, language=language)
-            elif lower.endswith((".pdf",".docx",".md",".markdown",".txt")):
-                r = ingest_docs(path, out_jsonl=CHUNKS_PATH, language=language)
+            while True:
+                chunk = await f.read(8192)  # 8KB chunks
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    results.append({
+                        "file": f.filename,
+                        "error": f"File exceeds maximum size of {MAX_FILE_SIZE // (1024*1024)}MB"
+                    })
+                    break
+                content += chunk
+        except Exception as e:
+            results.append({"file": f.filename, "error": f"Failed to read file: {str(e)}"})
+            continue
+        
+        if size > MAX_FILE_SIZE:
+            continue
+        
+        # Write file
+        try:
+            with open(path, "wb") as out:
+                out.write(content)
+        except Exception as e:
+            results.append({"file": f.filename, "error": f"Failed to save file: {str(e)}"})
+            continue
+        
+        # Process file
+        lower = safe_name.lower()
+        try:
+            if lower.endswith((".vtt", ".srt", ".txt")):
+                r = ingest_transcript(str(path), out_jsonl=CHUNKS_PATH, language=language)
+            elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
+                r = ingest_docs(str(path), out_jsonl=CHUNKS_PATH, language=language)
             else:
-                r = {"error":"unsupported file type"}
+                r = {"error": "unsupported file type"}
         except Exception as e:
             r = {"error": str(e)}
-        results.append({"file": name, **r})
-        total += int(r.get("written",0) or 0)
+        
+        results.append({"file": f.filename, "safe_name": safe_name, **r})
+        total += int(r.get("written", 0) or 0)
+    
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 
 @app.post("/api/dedupe")
