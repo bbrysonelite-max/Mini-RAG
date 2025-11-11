@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>RAG Desk</title>
+<link rel="icon" type="image/svg+xml" href="/app/favicon.svg"/>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:1000px;margin:1.5rem auto;padding:0 1rem;line-height:1.6}
 nav{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
@@ -90,6 +91,7 @@ a:hover{color:#333}
     <div id="progressText" class="small" style="margin-top:0.5rem"></div>
   </div>
   <button id="upload" class="btn">Upload & Ingest</button>
+  <div id="statusMessage" style="display:none;padding:1rem;border-radius:8px;margin:1rem 0;font-weight:500"></div>
   <h3>Ingestion History</h3>
   <div id="ingestHistory" style="max-height:200px;overflow:auto;margin:1rem 0">
     <p class="small" style="color:#666">No ingestion history yet.</p>
@@ -194,12 +196,27 @@ $("ingestUrls").onclick=async()=>{
   try{
     const r=await fetch("/ingest/urls",{method:"POST",body:f}); 
     progressBar.style.width = "100%";
-    progressText.textContent = "Complete!";
     const d=await r.json();
     log.textContent=JSON.stringify(d,null,2);
     
-    // Add to history
+    // Process results and show status
+    let successCount = 0;
+    let errorCount = 0;
+    let totalChunks = 0;
+    const errors = [];
+    
     (d.results || []).forEach(result => {
+      if(result.error){
+        errorCount++;
+        errors.push(`${result.url}: ${result.error}`);
+      } else if(result.written > 0){
+        successCount++;
+        totalChunks += result.written || 0;
+      } else {
+        errorCount++;
+        errors.push(`${result.url}: No chunks written (video may not have transcripts)`);
+      }
+      
       historyItems.push({
         type: "url",
         url: result.url,
@@ -207,6 +224,20 @@ $("ingestUrls").onclick=async()=>{
         timestamp: new Date().toISOString()
       });
     });
+    
+    // Show status message
+    if(successCount > 0 && errorCount === 0){
+      showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} URL(s)`, "success");
+      progressText.textContent = `Success! ${totalChunks} chunks ingested`;
+    } else if(successCount > 0 && errorCount > 0){
+      showStatus(`⚠️ Partial success: ${totalChunks} chunks from ${successCount} URL(s), ${errorCount} failed. Check log for details.`, "error");
+      progressText.textContent = `Partial: ${totalChunks} chunks, ${errorCount} failed`;
+    } else {
+      const errorMsg = errors.length > 0 ? errors[0] : "No chunks were written";
+      showStatus(`❌ Failed: ${errorMsg}`, "error");
+      progressText.textContent = "Failed - see details below";
+    }
+    
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
     
@@ -216,10 +247,11 @@ $("ingestUrls").onclick=async()=>{
     setTimeout(() => {
       uploadProgress.style.display = "none";
       progressBar.style.width = "0%";
-    }, 2000);
+    }, 5000);
   }catch(e){
     progressText.textContent = `Error: ${e.message}`;
     log.textContent = `Error: ${e.message}`;
+    showStatus(`❌ Error: ${e.message}`, "error");
   }
 };
 
@@ -231,6 +263,18 @@ const uploadProgress = $("uploadProgress");
 const progressBar = $("progressBar");
 const progressText = $("progressText");
 const ingestHistory = $("ingestHistory");
+const statusMessage = $("statusMessage");
+
+function showStatus(message, type="success"){
+  statusMessage.style.display = "block";
+  statusMessage.textContent = message;
+  statusMessage.style.background = type === "success" ? "#d4edda" : "#f8d7da";
+  statusMessage.style.color = type === "success" ? "#155724" : "#721c24";
+  statusMessage.style.border = `1px solid ${type === "success" ? "#c3e6cb" : "#f5c6cb"}`;
+  setTimeout(() => {
+    statusMessage.style.display = "none";
+  }, 10000);
+}
 
 dropZone.onclick = () => fileInput.click();
 dropZone.ondragover = (e) => { e.preventDefault(); dropZone.style.borderColor = "#111"; };
@@ -282,12 +326,27 @@ $("upload").onclick=async()=>{
     progressText.textContent = "Processing...";
     const d=await r.json();
     progressBar.style.width = "100%";
-    progressText.textContent = "Complete!";
     log.textContent=JSON.stringify(d,null,2);
     
-    // Add to history
+    // Process results and show status
+    let successCount = 0;
+    let errorCount = 0;
+    let totalChunks = 0;
+    const errors = [];
+    
     Array.from(fs).forEach((file, idx) => {
       const result = d.results?.[idx] || {};
+      if(result.error){
+        errorCount++;
+        errors.push(`${file.name}: ${result.error}`);
+      } else if(result.written > 0){
+        successCount++;
+        totalChunks += result.written || 0;
+      } else {
+        errorCount++;
+        errors.push(`${file.name}: No chunks written`);
+      }
+      
       historyItems.push({
         type: "file",
         name: file.name,
@@ -295,6 +354,20 @@ $("upload").onclick=async()=>{
         timestamp: new Date().toISOString()
       });
     });
+    
+    // Show status message
+    if(successCount > 0 && errorCount === 0){
+      showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} file(s)`, "success");
+      progressText.textContent = `Success! ${totalChunks} chunks ingested`;
+    } else if(successCount > 0 && errorCount > 0){
+      showStatus(`⚠️ Partial success: ${totalChunks} chunks from ${successCount} file(s), ${errorCount} failed. Check log for details.`, "error");
+      progressText.textContent = `Partial: ${totalChunks} chunks, ${errorCount} failed`;
+    } else {
+      const errorMsg = errors.length > 0 ? errors[0] : "No chunks were written";
+      showStatus(`❌ Failed: ${errorMsg}`, "error");
+      progressText.textContent = "Failed - see details below";
+    }
+    
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
     
@@ -306,10 +379,11 @@ $("upload").onclick=async()=>{
       progressBar.style.width = "0%";
       fileInput.value = "";
       updateFileList();
-    }, 2000);
+    }, 5000);
   }catch(e){
     progressText.textContent = `Error: ${e.message}`;
     log.textContent = `Error: ${e.message}`;
+    showStatus(`❌ Error: ${e.message}`, "error");
   }
 };
 

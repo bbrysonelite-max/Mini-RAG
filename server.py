@@ -87,9 +87,13 @@ def ingest_urls(urls: str = Form(...), language: str = Form("en")):
     for url in urls_list:
         try:
             r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=language)
-            results.append({"url": url, "written": r.get("written",0), "mode": "transcript"})
-            total += r.get("written",0)
-        except Exception:
+            written = r.get("written", 0)
+            if written == 0 and r.get("stderr"):
+                results.append({"url": url, "written": 0, "mode": "transcript", "error": r.get("stderr", "Unknown error")})
+            else:
+                results.append({"url": url, "written": written, "mode": "transcript"})
+            total += written
+        except Exception as e:
             # fallback: fetch auto-captions via yt-dlp, then ingest .vtt
             vid = ""
             try:
@@ -115,7 +119,8 @@ def ingest_urls(urls: str = Form(...), language: str = Form("en")):
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
                 total += r.get("written",0)
             else:
-                results.append({"url": url, "error": "no transcript or auto-captions found"})
+                error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
+                results.append({"url": url, "error": error_msg, "written": 0})
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 
 @app.post("/api/ingest_files")
