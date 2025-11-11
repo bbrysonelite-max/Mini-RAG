@@ -1,0 +1,460 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>RAG Desk</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:1000px;margin:1.5rem auto;padding:0 1rem;line-height:1.6}
+nav{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
+.tab{padding:.5rem 1rem;border:1px solid #ccc;border-radius:8px;cursor:pointer;transition:all 0.2s;user-select:none}
+.tab:hover{background:#f5f5f5;border-color:#999}
+.tab.active{background:#111;color:#fff;border-color:#111}
+.tab.active:hover{background:#333}
+section{display:none} section.active{display:block;animation:fadeIn 0.3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+textarea,input[type=text]{width:100%;padding:.6rem;border:1px solid #ddd;border-radius:8px;font-family:inherit;font-size:inherit;box-sizing:border-box}
+textarea:focus,input[type=text]:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.1)}
+.btn{padding:.6rem 1rem;border-radius:8px;border:1px solid #333;background:#111;color:#fff;cursor:pointer;font-size:inherit;transition:all 0.2s;font-weight:500}
+.btn:hover{background:#333;transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.2)}
+.btn:active{transform:translateY(0)}
+pre{background:#f7f7f7;padding:1rem;border-radius:8px;white-space:pre-wrap;max-height:420px;overflow:auto;border:1px solid #eee}
+.badge{background:#eee;border-radius:6px;padding:.2rem .5rem;margin-right:.4rem;font-size:0.85em;display:inline-block}
+.small{font-size:.9em;color:#555}
+.row{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+.counter{font-weight:600}
+.source-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1);transform:translateY(-2px);transition:all 0.2s}
+.chunk-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all 0.2s}
+mark{background:#ffeb3b;padding:0 2px;border-radius:2px}
+a{color:#111;text-decoration:underline}
+a:hover{color:#333}
+@media (max-width:768px){
+  body{padding:0 0.5rem}
+  nav{flex-direction:column}
+  .tab{width:100%;text-align:center}
+  .row{flex-direction:column;align-items:stretch}
+  .btn{width:100%}
+  pre{max-height:300px}
+}
+</style>
+</head>
+<body>
+<h1>RAG Desk</h1>
+<nav>
+  <div id="tabAsk" class="tab active">Ask</div>
+  <div id="tabBrowser" class="tab">Browser</div>
+  <div id="tabIngest" class="tab">Ingest</div>
+</nav>
+
+<section id="ask" class="active">
+  <div class="row">
+    <button id="mic" class="btn">🎤 Start listening</button>
+    <span class="small">Current chunks: <span id="count" class="counter">–</span></span>
+  </div>
+  <textarea id="q" placeholder="Ask about your videos and guides..."></textarea>
+  <button id="askBtn" class="btn">Ask</button>
+  <h3>Answer</h3>
+  <pre id="ans"></pre>
+  <div id="score"></div>
+  <div id="chunksSection" style="margin-top:2rem;display:none">
+    <h3>Retrieved Chunks <span class="small" id="chunksCount"></span></h3>
+    <div id="chunksList"></div>
+  </div>
+</section>
+
+<section id="browser">
+  <div class="row">
+    <input type="text" id="sourceFilter" placeholder="Filter by name, type, or content..." style="flex:1;max-width:400px"/>
+    <button id="refreshSources" class="btn">Refresh</button>
+  </div>
+  <div id="sourcesList"></div>
+</section>
+
+<section id="ingest">
+  <h3>Ingest URLs</h3>
+  <textarea id="urls" placeholder="Paste YouTube links, one per line"></textarea>
+  <div class="row">
+    <button id="ingestUrls" class="btn">Ingest URLs</button>
+    <button id="dedupe" class="btn">Dedupe</button>
+    <button id="rebuild" class="btn">Rebuild Index</button>
+  </div>
+  <h3>Upload files (.vtt .srt .txt .pdf .docx .md)</h3>
+  <div id="dropZone" style="border:2px dashed #ccc;border-radius:8px;padding:2rem;text-align:center;margin:1rem 0;cursor:pointer;background:#fafafa">
+    <p>Drag and drop files here or click to select</p>
+    <input id="files" type="file" multiple style="display:none"/>
+  </div>
+  <div id="fileList" style="margin:1rem 0"></div>
+  <div id="uploadProgress" style="display:none;margin:1rem 0">
+    <div style="background:#eee;border-radius:4px;height:20px;overflow:hidden">
+      <div id="progressBar" style="background:#111;height:100%;width:0%;transition:width 0.3s"></div>
+    </div>
+    <div id="progressText" class="small" style="margin-top:0.5rem"></div>
+  </div>
+  <button id="upload" class="btn">Upload & Ingest</button>
+  <h3>Ingestion History</h3>
+  <div id="ingestHistory" style="max-height:200px;overflow:auto;margin:1rem 0">
+    <p class="small" style="color:#666">No ingestion history yet.</p>
+  </div>
+  <h3>Log</h3>
+  <pre id="log"></pre>
+</section>
+
+<script>
+function $(id){return document.getElementById(id)}
+const q=$("q"), ans=$("ans"), score=$("score"), mic=$("mic"), countEl=$("count"), log=$("log");
+
+function highlightText(text, query){
+  if(!query || !text) return text;
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  let highlighted = text;
+  words.forEach(word => {
+    const regex = new RegExp(`(${word})`, 'gi');
+    highlighted = highlighted.replace(regex, '<mark style="background:#ffeb3b;padding:0 2px">$1</mark>');
+  });
+  return highlighted;
+}
+
+$("askBtn").onclick=async()=>{
+  const query = q.value||"";
+  if(!query.trim()){alert("Enter a question first"); return;}
+  const f=new FormData(); f.append("query", query); f.append("k","8");
+  ans.textContent = "Searching...";
+  score.innerHTML = "";
+  $("chunksSection").style.display = "none";
+  
+  try{
+    const r=await fetch("/ask",{method:"POST",body:f}); const d=await r.json();
+    ans.textContent=d.answer||""; 
+    const s=d.score||{};
+    score.innerHTML=['coverage','groundedness','citations','brevity','total'].map(k=>`<span class="badge">${k}: ${s[k]??'-'}</span>`).join(' ');
+    
+    // Display chunks
+    if(d.chunks && d.chunks.length > 0){
+      $("chunksSection").style.display = "block";
+      $("chunksCount").textContent = `(${d.chunks.length} chunks)`;
+      $("chunksList").innerHTML = d.chunks.map((chunk, idx) => {
+        const meta = chunk.metadata || {};
+        const source = chunk.source || {};
+        const isExpanded = idx < 3; // First 3 expanded by default
+        return `
+          <div class="chunk-card" style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
+              <div>
+                <strong>Chunk ${chunk.index}</strong>
+                <span class="badge" style="margin-left:0.5rem">Score: ${chunk.score.toFixed(2)}</span>
+                ${meta.start_sec !== undefined ? `<span class="badge">Time: ${Math.floor(meta.start_sec/60)}:${String(Math.floor(meta.start_sec%60)).padStart(2,'0')}</span>` : ''}
+                ${meta.chunk_index !== undefined ? `<span class="badge">Part ${meta.chunk_index + 1}/${meta.chunk_count || ''}</span>` : ''}
+              </div>
+              <button class="btn" onclick="toggleChunk(${idx})" style="padding:0.4rem 0.8rem;font-size:0.9em" id="toggleBtn${idx}">
+                ${isExpanded ? 'Collapse' : 'Expand'}
+              </button>
+            </div>
+            <div class="small" style="color:#666;margin-bottom:0.5rem">
+              Source: ${source.type || 'unknown'} | 
+              <a href="${chunk.citation}" target="_blank">${chunk.citation}</a>
+            </div>
+            <div id="chunkContent${idx}" style="${isExpanded ? '' : 'display:none'}">
+              <div style="white-space:pre-wrap;background:#f7f7f7;padding:1rem;border-radius:4px;max-height:300px;overflow:auto">
+                ${highlightText((chunk.content || '').replace(/</g,'&lt;').replace(/>/g,'&gt;'), query)}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      
+      // Store chunks data for toggle
+      window.chunksData = d.chunks;
+    }
+  }catch(e){
+    ans.textContent = `Error: ${e.message}`;
+  }
+};
+
+function toggleChunk(idx){
+  const content = $("chunkContent"+idx);
+  const btn = $("toggleBtn"+idx);
+  if(content.style.display === "none"){
+    content.style.display = "block";
+    btn.textContent = "Collapse";
+  }else{
+    content.style.display = "none";
+    btn.textContent = "Expand";
+  }
+}
+window.toggleChunk = toggleChunk;
+
+$("ingestUrls").onclick=async()=>{
+  const urls = $("urls").value||"";
+  if(!urls.trim()){alert("Enter URLs first"); return;}
+  const f=new FormData(); f.append("urls", urls);
+  log.textContent="Ingesting…";
+  uploadProgress.style.display = "block";
+  progressBar.style.width = "50%";
+  progressText.textContent = "Processing URLs...";
+  
+  try{
+    const r=await fetch("/ingest/urls",{method:"POST",body:f}); 
+    progressBar.style.width = "100%";
+    progressText.textContent = "Complete!";
+    const d=await r.json();
+    log.textContent=JSON.stringify(d,null,2);
+    
+    // Add to history
+    (d.results || []).forEach(result => {
+      historyItems.push({
+        type: "url",
+        url: result.url,
+        chunks: result.written || 0,
+        timestamp: new Date().toISOString()
+      });
+    });
+    localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
+    updateHistory();
+    
+    // Update stats
+    if(countEl) countEl.textContent = d.count || 0;
+    
+    setTimeout(() => {
+      uploadProgress.style.display = "none";
+      progressBar.style.width = "0%";
+    }, 2000);
+  }catch(e){
+    progressText.textContent = `Error: ${e.message}`;
+    log.textContent = `Error: ${e.message}`;
+  }
+};
+
+// Drag and drop
+const dropZone = $("dropZone");
+const fileInput = $("files");
+const fileList = $("fileList");
+const uploadProgress = $("uploadProgress");
+const progressBar = $("progressBar");
+const progressText = $("progressText");
+const ingestHistory = $("ingestHistory");
+
+dropZone.onclick = () => fileInput.click();
+dropZone.ondragover = (e) => { e.preventDefault(); dropZone.style.borderColor = "#111"; };
+dropZone.ondragleave = () => { dropZone.style.borderColor = "#ccc"; };
+dropZone.ondrop = (e) => {
+  e.preventDefault();
+  dropZone.style.borderColor = "#ccc";
+  fileInput.files = e.dataTransfer.files;
+  updateFileList();
+};
+
+fileInput.onchange = updateFileList;
+function updateFileList(){
+  const files = Array.from(fileInput.files || []);
+  if(files.length === 0){
+    fileList.innerHTML = "";
+    return;
+  }
+  fileList.innerHTML = `<div class="small" style="margin-bottom:0.5rem">Selected ${files.length} file(s):</div>` +
+    files.map(f => `<div class="small" style="padding:0.25rem">${f.name} (${(f.size/1024).toFixed(1)} KB)</div>`).join('');
+}
+
+let historyItems = JSON.parse(localStorage.getItem('ingestHistory') || '[]');
+function updateHistory(){
+  if(historyItems.length === 0){
+    ingestHistory.innerHTML = '<p class="small" style="color:#666">No ingestion history yet.</p>';
+    return;
+  }
+  ingestHistory.innerHTML = historyItems.slice(-10).reverse().map(item => `
+    <div style="border-bottom:1px solid #eee;padding:0.5rem 0;font-size:0.9em">
+      <strong>${item.type}</strong>: ${item.name || item.url || 'Unknown'}
+      <div class="small" style="color:#666">${new Date(item.timestamp).toLocaleString()} | ${item.chunks || 0} chunks</div>
+    </div>
+  `).join('');
+}
+updateHistory();
+
+$("upload").onclick=async()=>{
+  const fs=fileInput.files; if(!fs.length){alert("Select files first"); return;}
+  const f=new FormData(); for(const x of fs){ f.append("files",x); }
+  log.textContent="Uploading…";
+  uploadProgress.style.display = "block";
+  progressBar.style.width = "30%";
+  progressText.textContent = "Uploading files...";
+  
+  try{
+    const r=await fetch("/ingest/files",{method:"POST",body:f}); 
+    progressBar.style.width = "70%";
+    progressText.textContent = "Processing...";
+    const d=await r.json();
+    progressBar.style.width = "100%";
+    progressText.textContent = "Complete!";
+    log.textContent=JSON.stringify(d,null,2);
+    
+    // Add to history
+    Array.from(fs).forEach((file, idx) => {
+      const result = d.results?.[idx] || {};
+      historyItems.push({
+        type: "file",
+        name: file.name,
+        chunks: result.written || 0,
+        timestamp: new Date().toISOString()
+      });
+    });
+    localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
+    updateHistory();
+    
+    // Update stats
+    if(countEl) countEl.textContent = d.count || 0;
+    
+    setTimeout(() => {
+      uploadProgress.style.display = "none";
+      progressBar.style.width = "0%";
+      fileInput.value = "";
+      updateFileList();
+    }, 2000);
+  }catch(e){
+    progressText.textContent = `Error: ${e.message}`;
+    log.textContent = `Error: ${e.message}`;
+  }
+};
+
+$("dedupe").onclick=async()=>{
+  log.textContent="Deduping…";
+  try{
+    const r=await fetch("/dedupe",{method:"POST"}); const d=await r.json();
+    log.textContent=JSON.stringify(d,null,2);
+    if(countEl) countEl.textContent = d.count || 0;
+  }catch(e){
+    log.textContent = `Error: ${e.message}`;
+  }
+};
+
+$("rebuild").onclick=async()=>{
+  log.textContent="Rebuilding index…";
+  try{
+    const r=await fetch("/rebuild",{method:"POST"}); const d=await r.json();
+    log.textContent=JSON.stringify(d,null,2);
+    if(countEl) countEl.textContent = d.count || 0;
+  }catch(e){
+    log.textContent = `Error: ${e.message}`;
+  }
+};
+
+// Speech-to-text
+let rec=null,on=false;
+mic.onclick=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){alert("SpeechRecognition not available in this browser"); return;}
+  if(!rec){rec=new SR(); rec.lang='en-US'; rec.continuous=true; rec.onresult=(e)=>{let t=''; for(let i=0;i<e.results.length;i++){t+=e.results[i][0].transcript+' ';} q.value=t.trim();}; rec.onend=()=>{on=false; mic.textContent='🎤 Start listening';}; }
+  if(!on){rec.start(); on=true; mic.textContent='🛑 Stop listening';} else {rec.stop();}
+};
+
+// Tab switch
+const tab=(id)=>{ 
+  for(const s of ["ask","browser","ingest"]){ $(s).classList.toggle("active", s===id);} 
+  for(const t of ["tabAsk","tabBrowser","tabIngest"]){ 
+    const tabId = "tab"+id.charAt(0).toUpperCase()+id.slice(1);
+    $(t).classList.toggle("active", t===tabId);
+  }
+};
+$("tabAsk").onclick=()=>tab("ask"); 
+$("tabBrowser").onclick=()=>{tab("browser"); loadSources();};
+$("tabIngest").onclick=()=>tab("ingest");
+
+// Browser functionality
+let allSources = [];
+async function loadSources(){
+  try{
+    const r=await fetch("/api/sources"); const d=await r.json();
+    allSources = d.sources || [];
+    renderSources();
+  }catch(e){
+    $("sourcesList").innerHTML=`<p style="color:red">Error loading sources: ${e.message}</p>`;
+  }
+}
+function renderSources(){
+  const filter = ($("sourceFilter")?.value || "").toLowerCase();
+  const filtered = allSources.filter(s => 
+    !filter || 
+    (s.display_name || "").toLowerCase().includes(filter) ||
+    (s.type || "").toLowerCase().includes(filter) ||
+    (s.path || "").toLowerCase().includes(filter) ||
+    (s.url || "").toLowerCase().includes(filter)
+  );
+  if(filtered.length === 0){
+    $("sourcesList").innerHTML = `<p class="small">No sources found${filter ? ' matching filter' : ''}.</p>`;
+    return;
+  }
+  $("sourcesList").innerHTML = filtered.map(s => `
+    <div class="source-card" style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
+        <div style="flex:1">
+          <strong>${s.display_name || 'Unknown'}</strong>
+          <div class="small" style="margin-top:0.25rem">
+            <span class="badge">${s.type}</span>
+            <span class="badge">${s.chunk_count} chunks</span>
+            ${s.language ? `<span class="badge">${s.language}</span>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem">
+          <button class="btn" onclick="viewSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em">View</button>
+          <button class="btn" onclick="deleteSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em;background:#c33">Delete</button>
+        </div>
+      </div>
+      <div class="small" style="color:#666">
+        ${s.path ? `Path: ${s.path}<br>` : ''}
+        ${s.url ? `URL: <a href="${s.url}" target="_blank">${s.url}</a><br>` : ''}
+        ${s.first_seen ? `Added: ${new Date(s.first_seen).toLocaleString()}` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+$("sourceFilter").oninput = renderSources;
+$("refreshSources").onclick = loadSources;
+async function viewSource(id){
+  try{
+    const r=await fetch(`/api/sources/${id}/chunks`); const d=await r.json();
+    const chunks = d.chunks || [];
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;overflow:auto;padding:2rem';
+    modal.innerHTML = `
+      <div style="background:white;max-width:800px;margin:0 auto;padding:2rem;border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+          <h2>Document Viewer</h2>
+          <button onclick="this.closest('div[style*=\"position:fixed\"]').remove()" class="btn">Close</button>
+        </div>
+        <div style="max-height:70vh;overflow:auto">
+          ${chunks.map((c,idx) => `
+            <div style="border-bottom:1px solid #eee;padding:1rem 0">
+              <div class="small" style="color:#666;margin-bottom:0.5rem">
+                Chunk ${idx+1} of ${chunks.length}
+                ${c.metadata?.start_sec !== undefined ? ` | Time: ${Math.floor(c.metadata.start_sec/60)}:${String(Math.floor(c.metadata.start_sec%60)).padStart(2,'0')}` : ''}
+              </div>
+              <div style="white-space:pre-wrap">${(c.content || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }catch(e){
+    alert(`Error loading source: ${e.message}`);
+  }
+}
+async function deleteSource(id){
+  if(!confirm('Delete this source and all its chunks?')) return;
+  try{
+    const r=await fetch(`/api/sources/${id}`,{method:'DELETE'}); const d=await r.json();
+    await loadSources();
+    if(countEl) countEl.textContent = d.kept || 0;
+    alert(`Deleted ${d.deleted || 0} chunks. ${d.kept || 0} chunks remaining.`);
+  }catch(e){
+    alert(`Error deleting source: ${e.message}`);
+  }
+}
+window.viewSource = viewSource;
+window.deleteSource = deleteSource;
+
+// Load stats on page load
+(async()=>{
+  try{
+    const r=await fetch("/api/stats"); const d=await r.json();
+    if(countEl) countEl.textContent = d.count || 0;
+  }catch(e){}
+})();
+</script>
+</body>
+</html>

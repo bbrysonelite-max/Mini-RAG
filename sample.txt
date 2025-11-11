@@ -1,0 +1,2 @@
+This is a small sample about building a RAG system from videos and guides.
+It demonstrates ingestion and retrieval.

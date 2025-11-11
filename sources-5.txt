@@ -1,0 +1,41 @@
+# One per line. URLs or file paths.
+# Replace these with the 5 you want.
+https://youtu.be/elOF2kB7YqM?list=TLGG3cvxyXf44OwxMDExMjAyNQ
+https://youtu.be/2m7Os3LD_j0?list=TLGGS797X-NHzT0xMDExMjAyNQ
+https://youtu.be/dxeCH2duhMo?list=TLGGrSaqz1ie-xsxMDExMjAyNQ
+https://youtu.be/NHw11FLnGQ4?list=TLGGDxuOeghV5IQxMDExMjAyNQ 
+https://www.youtube.com/watch?v=wo3wYm2lBjo&t=1s 
+source .venv/bin/activate
+cat > sources-5.txt <<'EOF'
+# One per line. URLs or file paths.
+# Replace these with the 5 you want.
+https://youtu.be/elOF2kB7YqM
+https://youtu.be/dxeCH2duhMo   # already ingested; remove if you don’t want duplicates
+# /Users/you/Documents/SomeGuide.pdf
+# /Users/you/Downloads/meeting.en.vtt
+# /Users/you/Notes/plan.txt
+EOF
+
+# Open it to edit/paste your real 5 items
+open -e sources-5.txtcd ~/Projects/rag
+source .venv/bin/activate
+cat > sources-5.txt <<'EOF'
+# One per line. URLs or file paths.
+# Replace these with the 5 you want.
+https://youtu.be/elOF2kB7YqM
+https://youtu.be/dxeCH2duhMo   # already ingested; remove if you don’t want duplicates
+# /Users/you/Documents/SomeGuide.pdf
+# /Users/you/Downloads/meeting.en.vtt
+# /Users/you/Notes/plan.txt
+EOF
+# Open it to edit/paste your real 5 items
+open -e sources-5.txt
+https://youtu.be/elOF2kB7YqM?list=TLGG3cvxyXf44OwxMDExMjAyNQ
+https://youtu.be/2m7Os3LD_j0?list=TLGGS797X-NHzT0xMDExMjAyNQ
+https://youtu.be/dxeCH2duhMo?list=TLGGrSaqz1ie-xsxMDExMjAyNQ
+https://youtu.be/NHw11FLnGQ4?list=TLGGDxuOeghV5IQxMDExMjAyNQ 
+https://www.youtube.com/watch?v=wo3wYm2lBjo&t=1s 
+
+
+
+

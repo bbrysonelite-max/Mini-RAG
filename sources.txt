@@ -1,0 +1,5 @@
+# You can add more lines here (one per line). URLs or file paths.
+https://youtu.be/dxeCH2duhMo
+https://youtu.be/elOF2kB7YqM
+samples/sample.txt
+dxeCH2duhMo.en.vtt
