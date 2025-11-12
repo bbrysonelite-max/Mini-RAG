@@ -8,4 +8,7 @@ docx2txt>=0.8
 youtube-transcript-api>=0.6.0
 webvtt-py>=0.4.6
 srt>=3.5.3
+authlib>=1.2.0
+python-jose[cryptography]>=3.3.0
+python-dotenv>=1.0.0
 
