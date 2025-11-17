@@ -349,3 +349,4 @@ class VectorStore:
             logger.error(f"Failed to rebuild index: {e}")
             return False
 
+
