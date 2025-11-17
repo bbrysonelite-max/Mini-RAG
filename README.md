@@ -1,5 +1,7 @@
 # Mini-RAG: Document Retrieval and Question Answering System
 
+[Social media links placeholder]
+
 A lightweight RAG (Retrieval-Augmented Generation) system for ingesting, searching, and querying documents, YouTube transcripts, and other text sources.
 
 ## Features

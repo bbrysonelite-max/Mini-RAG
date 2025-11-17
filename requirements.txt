@@ -12,3 +12,12 @@ authlib>=1.2.0
 python-jose[cryptography]>=3.3.0
 python-dotenv>=1.0.0
 
+# Database & Vector Store (pgvector)
+psycopg[binary]>=3.1.0
+psycopg-pool>=3.1.0
+
+# LLM Providers
+openai>=1.0.0
+anthropic>=0.7.0
+httpx>=0.25.0
+
