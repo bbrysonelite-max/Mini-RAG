@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LIST_FILE="${1:-sources.txt}"
+LIST_FILE="${1:-examples/transcripts/sources.txt}"
 OUT="out/chunks.jsonl"
 
 echo "==> Using list: $LIST_FILE"

@@ -56,7 +56,7 @@ This document tracks the step-by-step development of Mini-RAG from prototype to 
 - [x] Add request timeouts
 - [x] Sanitize error messages (don't expose internal paths)
 
-**Reference:** See `CRITICAL_FIXES_GUIDE.md` for code examples
+**Reference:** See `docs/guides/CRITICAL_FIXES_GUIDE.md` for code examples
 
 ---
 
@@ -222,8 +222,8 @@ This document tracks the step-by-step development of Mini-RAG from prototype to 
 
 ## Resources
 
-- `COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis
-- `CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
+- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis
+- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
 - `QUICK_REFERENCE.md` - Quick checklist
 
 ---

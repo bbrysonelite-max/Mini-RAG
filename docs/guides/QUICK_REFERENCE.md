@@ -170,8 +170,8 @@
 
 ## 📚 Key Documents
 
-1. **COMMERCIAL_VIABILITY_ANALYSIS.md** - Full analysis
-2. **CRITICAL_FIXES_GUIDE.md** - Code-level fixes
+1. **docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md** - Full analysis
+2. **docs/guides/CRITICAL_FIXES_GUIDE.md** - Code-level fixes
 3. **This document** - Quick reference
 
 ## 🔗 Useful Resources

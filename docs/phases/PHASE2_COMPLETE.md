@@ -243,7 +243,7 @@ Code quality improvements:
 - Structured logging aids troubleshooting
 - Specific exception types prevent silent failures
 - Timeout prevents resource exhaustion
-- All changes follow CRITICAL_FIXES_GUIDE.md patterns
+- All changes follow docs/guides/CRITICAL_FIXES_GUIDE.md patterns
 
 ---
 

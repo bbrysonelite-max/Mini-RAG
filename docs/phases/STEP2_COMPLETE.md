@@ -69,7 +69,7 @@ Full pgvector implementation for production-ready vector search at scale.
 - Graceful handling of missing dependencies
 - Clear pass/fail reporting
 
-### 6. Setup Documentation (`PGVECTOR_SETUP.md`) ✅
+### 6. Setup Documentation (`docs/guides/PGVECTOR_SETUP.md`) ✅
 - Installation instructions for macOS, Linux, Docker
 - Database setup steps
 - Configuration guide

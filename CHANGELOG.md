@@ -3,7 +3,7 @@
 ### 2025-11-17
 - Added automated test suite `test_phase3_auth.py` covering JWT, chunk user IDs, search filtering, and admin role checks.
 - Ran test suite (`venv/bin/python3 test_phase3_auth.py`); 6 tests passed, 1 skipped (needs DATABASE_URL for user service).
-- Documented Phase 3 completion in `PHASE3_COMPLETE.md` and ensured honest reporting of test status.
+- Documented Phase 3 completion in `docs/phases/PHASE3_COMPLETE.md` and ensured honest reporting of test status.
 
 ### 2025-11-18
 - Verified project dependencies and installed missing database drivers (`psycopg[binary]`, `psycopg-pool`).

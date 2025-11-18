@@ -48,7 +48,7 @@ Phase 3 successfully implemented complete authentication and user management sys
    - First user auto-admin logic
    - Role management functions
 
-2. **PHASE3_COMPLETE.md**
+2. **docs/phases/PHASE3_COMPLETE.md**
    - Comprehensive documentation
    - API changes
    - Authentication flow
@@ -217,7 +217,7 @@ DATABASE_URL=postgresql://user:pass@localhost/rag_brain
 
 ## Documentation Created
 
-1. **PHASE3_COMPLETE.md** - 500+ lines
+1. **docs/phases/PHASE3_COMPLETE.md** - 500+ lines
    - Complete implementation summary
    - API documentation
    - Authentication flow diagrams
@@ -265,6 +265,9 @@ All changes followed these principles:
 - **Phase 3 Verification (Nov 18, 2025):**
   - Ran automated suite (`./venv/bin/python3 test_phase3_auth.py`) with 7/7 passing results using FakeDatabase for UserService coverage
   - Logged results and remaining manual follow-ups (browser OAuth + live PostgreSQL) in `CHANGELOG.md`
+- **Repository Cleanup (Nov 18, 2025):**
+  - Consolidated long-form docs under `docs/` (`guides/`, `notes/`, `phases/`) and kept ingestion helpers in `scripts/ingest/`
+  - Updated references (`README.md`, `ROADMAP.md`, `CHANGELOG.md`, Quick Reference, and Bug Solutions) plus `ingest_all.sh` default source path to match the new layout
 
 ### Server Availability Investigation Review (Nov 18, 2025)
 - Root cause: `venv/bin/uvicorn` still pointed at `/Users/brentbryson/Desktop/rag/venv/bin/python3`, so launching UVicorn failed before FastAPI could boot.
@@ -347,6 +350,30 @@ All changes followed these principles:
 - [ ] **P4-E3: Add regression coverage and docs for backups**
   - Extend `test_rag_pipeline.py` (or new focused test) to confirm backups are produced and restoration notes are available
   - Update `CHANGELOG.md` and relevant docs with backup usage + cleanup guidance
+
+**Status:** Draft – awaiting your approval before we execute tasks.
+
+---
+
+# Repository Cleanup Plan (Nov 18, 2025)
+
+**Goal:** Reduce root-level clutter by grouping docs, samples, and scripts while keeping runtime paths stable.
+
+## TODOs
+- [ ] **RC1: Inventory current tree**
+  - Capture current root layout and identify files to relocate (docs vs. runtime vs. scripts)
+- [ ] **RC2: Move supporting assets into dedicated folders**
+  - Consolidate reference docs under `docs/` (e.g., phase summaries, setup guides)
+  - Group sample transcripts and source lists under `examples/`
+  - Ensure runtime directories (`out/`, `logs/`, `var/`) remain documented and functional
+- [ ] **RC3: Update references and helper scripts**
+  - Adjust scripts/default paths (e.g., `scripts/ingest/ingest_all.sh`) to new locations
+  - Update README/CHANGELOG if paths change materially
+- [ ] **RC4: Verify & document**
+  - Run targeted checks (smoke tests or lint) if needed
+  - Summarize changes in the Review section
+- [ ] **RC5: Stage and commit**
+  - Prepare concise commit summarizing reorganization
 
 **Status:** Draft – awaiting your approval before we execute tasks.
 

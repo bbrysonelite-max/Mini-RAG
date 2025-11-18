@@ -168,7 +168,7 @@ Phase 3 added complete authentication and user management to Mini-RAG, including
 | File | Purpose | Lines |
 |------|---------|-------|
 | `user_service.py` | User CRUD operations | 180 |
-| `PHASE3_COMPLETE.md` | This document | - |
+| `docs/phases/PHASE3_COMPLETE.md` | This document | - |
 
 ### Modified Files
 | File | Changes |
@@ -311,14 +311,14 @@ CHUNKS_PATH=out/chunks.jsonl
 
 1. **Set up PostgreSQL with pgvector**
    ```bash
-   # See PGVECTOR_SETUP.md
+   # See ../guides/PGVECTOR_SETUP.md
    createdb rag_brain
    psql rag_brain < db_schema.sql
    ```
 
 2. **Configure Google OAuth**
    ```bash
-   # See GOOGLE_OAUTH_SETUP.md
+   # See ../guides/GOOGLE_OAUTH_SETUP.md
    # Get credentials from console.cloud.google.com
    ```
 

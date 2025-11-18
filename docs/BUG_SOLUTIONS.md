@@ -14,7 +14,7 @@ Before fixing any bug:
 
 ### Pattern: File Upload Security
 **Issue:** Path traversal, file size limits, file type validation
-**Solution:** See `CRITICAL_FIXES_GUIDE.md` section 1 for complete implementation
+**Solution:** See `docs/guides/CRITICAL_FIXES_GUIDE.md` section 1 for complete implementation
 **Key Points:**
 - Always sanitize filenames
 - Validate file types against whitelist
@@ -124,6 +124,6 @@ When documenting a new bug, use this format:
 
 - This file should be updated whenever a bug is fixed
 - Keep solutions concise but complete
-- Reference related files (like CRITICAL_FIXES_GUIDE.md) when appropriate
+- Reference related files (like docs/guides/CRITICAL_FIXES_GUIDE.md) when appropriate
 - Patterns can be reused across similar bugs
 

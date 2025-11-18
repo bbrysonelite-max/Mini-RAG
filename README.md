@@ -58,16 +58,21 @@ python raglite.py ingest-transcript --path transcript.vtt
 ## Project Structure
 
 ```
-rag/
-├── server.py              # FastAPI server with web UI
-├── raglite.py            # Core RAG functionality
-├── retrieval.py          # Search and indexing
-├── score.py              # Answer scoring
-├── ingest_*.py           # Ingestion modules
-├── frontend/
-│   └── index.html        # Web interface
+mini-rag/
+├── server.py                # FastAPI server with web UI
+├── raglite.py               # Core RAG functionality
+├── retrieval.py             # Search and indexing
+├── score.py                 # Answer scoring
+├── scripts/
+│   └── ingest/              # Ingestion utilities (docs, transcripts, YouTube)
+├── docs/
+│   ├── guides/              # Setup and how-to guides
+│   ├── notes/               # Planning/analysis docs
+│   └── phases/              # Phase completion reports
+├── examples/
+│   └── transcripts/         # Sample transcript files and source lists
 └── out/
-    └── chunks.jsonl      # Stored document chunks
+    └── chunks.jsonl         # Stored document chunks
 ```
 
 ## API Endpoints
@@ -88,14 +93,14 @@ Set environment variables:
 ## Security Notes
 
 ⚠️ **This is a development/prototype system. For production use, see:**
-- `COMMERCIAL_VIABILITY_ANALYSIS.md` - Security and commercial readiness analysis
-- `CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
+- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Security and commercial readiness analysis
+- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
 
 ## Documentation
 
-- `COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis of commercial readiness
-- `CRITICAL_FIXES_GUIDE.md` - Implementation guide for critical fixes
-- `QUICK_REFERENCE.md` - Quick checklist and reference
+- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis of commercial readiness
+- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Implementation guide for critical fixes
+- `docs/guides/QUICK_REFERENCE.md` - Quick checklist and reference
 
 ## License
 
