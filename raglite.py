@@ -1,5 +1,7 @@
-import argparse, json, os, re, hashlib, datetime
+import argparse, json, os, re, hashlib, datetime, shutil
 from typing import List, Dict, Any, Tuple
+
+from chunk_backup import ChunkBackupError, create_chunk_backup, restore_chunk_backup
 
 # --- Utilities ---
 WORD = re.compile(r"[A-Za-z0-9_']+")
@@ -14,15 +16,64 @@ def stable_id(text: str, extra: dict = None) -> str:
         h.update(json.dumps(extra, sort_keys=True).encode("utf-8"))
     return h.hexdigest()[:32]
 
+
 def ensure_dir(p: str):
     if p:
         os.makedirs(p, exist_ok=True)
 
+
 def write_jsonl(path: str, rows: List[Dict[str, Any]]):
+    """
+    Append chunk rows transactionally by staging to a temp file and swapping atomically.
+
+    Copy-on-write ensures we either keep the original file or replace it entirely with
+    the augmented file (all-or-nothing) while still creating a backup beforehand.
+    """
     ensure_dir(os.path.dirname(path))
-    with open(path, "a", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    if not rows:
+        return
+
+    try:
+        create_chunk_backup(path)
+    except ChunkBackupError as err:
+        raise IOError(f"Unable to create backup for {path}: {err}") from err
+
+    staged_path = f"{path}.staged"
+
+    try:
+        with open(staged_path, "w", encoding="utf-8") as staged:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as current:
+                    shutil.copyfileobj(current, staged)
+            for r in rows:
+                staged.write(json.dumps(r, ensure_ascii=False) + "\n")
+            staged.flush()
+            os.fsync(staged.fileno())
+        os.replace(staged_path, path)
+    except OSError as err:
+        try:
+            if os.path.exists(staged_path):
+                os.remove(staged_path)
+        except OSError:
+            pass
+        raise IOError(f"Failed to stage chunks to {path}: {err}") from err
+
+
+def perform_restore(chunks_path: str, backup_path: str = None) -> Dict[str, Any]:
+    """
+    Restore the chunks file from a snapshot and surface detailed errors.
+
+    Returns a dictionary suitable for CLI/json logging.
+    """
+    try:
+        restored_from, pre_backup = restore_chunk_backup(chunks_path, backup_path)
+        return {
+            "restored_from": restored_from,
+            "pre_backup": pre_backup or None,
+        }
+    except ChunkBackupError as err:
+        return {"error": str(err)}
 
 # --- Chunking ---
 def chunk_by_chars(text: str, target: int = 1200, overlap: int = 150) -> List[str]:
@@ -408,6 +459,7 @@ def main():
     d = sub.add_parser("ingest-docs"); d.add_argument("--path", required=True); d.add_argument("--out", default="out/chunks.jsonl"); d.add_argument("--language", default="en")
 
     s = sub.add_parser("serve"); s.add_argument("--chunks", default="out/chunks.jsonl"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
+    r = sub.add_parser("restore-backup"); r.add_argument("--chunks", default="out/chunks.jsonl"); r.add_argument("--backup", default=None)
 
     args = p.parse_args()
     if args.cmd == "ingest-youtube":
@@ -418,6 +470,8 @@ def main():
         res = ingest_docs(args.path, out_jsonl=args.out, language=args.language)
     elif args.cmd == "serve":
         run_server(args.chunks, args.host, args.port); return
+    elif args.cmd == "restore-backup":
+        res = perform_restore(args.chunks, args.backup)
     else:
         res = {"error": "unknown command"}
     print(json.dumps(res, indent=2))

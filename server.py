@@ -16,6 +16,8 @@ from score import score_answer
 # Import ingestion functions directly from raglite for user_id support
 from raglite import ingest_youtube, ingest_transcript, ingest_docs
 
+from chunk_backup import ChunkBackupError, create_chunk_backup
+
 # Import database (optional - server works without it)
 try:
     from database import Database, init_database
@@ -703,25 +705,45 @@ def dedupe(request: Request):
             detail="Authentication required."
         )
     
-    inp = CHUNKS_PATH; tmp = CHUNKS_PATH + ".tmp"
-    seen=set(); kept=0; total=0
+    inp = CHUNKS_PATH
+    tmp = CHUNKS_PATH + ".tmp"
+    seen = set()
+    kept = 0
+    total = 0
+
     try:
-        with open(inp,"r",encoding="utf-8") as f, open(tmp,"w",encoding="utf-8") as g:
+        create_chunk_backup(CHUNKS_PATH)
+    except ChunkBackupError as err:
+        raise HTTPException(status_code=500, detail=f"Failed to backup chunks: {err}") from err
+
+    try:
+        with open(inp, "r", encoding="utf-8") as f, open(tmp, "w", encoding="utf-8") as g:
             for line in f:
-                line=line.strip()
-                if not line: continue
+                line = line.strip()
+                if not line:
+                    continue
                 total += 1
                 try:
-                    obj=json.loads(line)
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
                 k = obj.get("id") or json.dumps(obj, sort_keys=True)
-                if k in seen: continue
-                seen.add(k); kept += 1
-                g.write(json.dumps(obj, ensure_ascii=False)+"\\n")
+                if k in seen:
+                    continue
+                seen.add(k)
+                kept += 1
+                g.write(json.dumps(obj, ensure_ascii=False) + "\n")
         os.replace(tmp, inp)
     except FileNotFoundError:
         pass
+    except OSError as err:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to dedupe chunks: {err}") from err
+
     return {"kept": kept, "total_before": total, "count": _count_lines(CHUNKS_PATH)}
 
 @app.get("/api/sources")

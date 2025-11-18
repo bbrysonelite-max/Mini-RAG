@@ -1,7 +1,9 @@
 
-import json, re, hashlib
+import json, os, re, hashlib
 from typing import List, Dict, Any
 from rank_bm25 import BM25Okapi
+
+from chunk_backup import ChunkBackupError, create_chunk_backup
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 def _tok(x): return [w.lower() for w in _WORD.findall(x or "")]
 def load_chunks(path):
@@ -106,12 +108,29 @@ def delete_source_chunks(path: str, source_id: str) -> Dict[str, Any]:
     chunks = load_chunks(path)
     to_keep = [c for c in chunks if _source_id(c.get("source", {})) != source_id]
     deleted_count = len(chunks) - len(to_keep)
+
+    if deleted_count == 0:
+        return {"deleted": 0, "kept": len(to_keep), "backup_path": None}
+
+    # Snapshot current state before rewriting so accidental data loss is recoverable.
+    try:
+        backup_path = create_chunk_backup(path)
+    except ChunkBackupError as err:
+        raise IOError(f"Unable to create backup for {path}: {err}") from err
     
     tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        for chunk in to_keep:
-            f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-    
-    import os
-    os.replace(tmp_path, path)
-    return {"deleted": deleted_count, "kept": len(to_keep)}
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for chunk in to_keep:
+                f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+        os.replace(tmp_path, path)
+    except OSError as err:
+        # Clean up any partially written temp file to avoid confusion.
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise IOError(f"Failed to rewrite chunks file {path}: {err}") from err
+
+    return {"deleted": deleted_count, "kept": len(to_keep), "backup_path": backup_path}

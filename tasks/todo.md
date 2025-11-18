@@ -341,17 +341,59 @@ All changes followed these principles:
 **Goal:** Start Phase 4 (Robustness & Polish) by adding chunk file safety nets before touching other polish items.
 
 ## TODOs
-- [ ] **P4-E1: Trace current chunk persistence flow**
-  - Review `raglite.write_jsonl`, ingestion endpoints, and server handlers to map every path that writes to `out/chunks.jsonl`
-  - Document current failure behavior (partial writes, exceptions) and capture notes in this file for reference
-- [ ] **P4-E2: Implement timestamped chunk backups before writes**
-  - Update ingestion/write helpers to create `backups/chunks-<timestamp>.jsonl` (or latest symlink) prior to appending
-  - Ensure backups run atomically with proper error handling and minimal performance impact
-- [ ] **P4-E3: Add regression coverage and docs for backups**
-  - Extend `test_rag_pipeline.py` (or new focused test) to confirm backups are produced and restoration notes are available
-  - Update `CHANGELOG.md` and relevant docs with backup usage + cleanup guidance
+- [x] **P4-E1: Trace current chunk persistence flow**
+  - Append path: `raglite.write_jsonl` handles all ingestion helpers and FastAPI upload endpoints (defaulting to `out/chunks.jsonl`)
+  - Rewrite path: `retrieval.delete_source_chunks` rewrites via `<chunks>.tmp` + `os.replace` without any pre-write backup
+  - Failure modes: append loop risks partial writes on exceptions; rewrite loses data if crash between temp/replace; no locking/backups yet
+- [x] **P4-E2: Implement timestamped chunk backups before writes**
+  - Added `chunk_backup.create_chunk_backup` with microsecond-safe filenames and wired it into `raglite.write_jsonl`, `retrieval.delete_source_chunks`, and `/api/dedupe`
+  - Backup failures raise clear `IOError`/`HTTPException` responses; append/rewrite operations now snapshot to `backups/latest.jsonl`
+- [x] **P4-E3: Add regression coverage and docs for backups**
+  - Added `test_chunk_backups` in `test_rag_pipeline.py` covering append + rewrite scenarios using temp directories
+  - Documented recovery steps in `docs/guides/QUICK_REFERENCE.md` and logged the feature + tests in `CHANGELOG.md`
 
-**Status:** Draft – awaiting your approval before we execute tasks.
+**Status:** ✅ Completed – chunk backups live with regression coverage and docs.
+
+## Review
+- Implemented chunk backup helper + integrations in `raglite.py`, `retrieval.py`, and `server.py`; added error handling for failed snapshots.
+- Added automated coverage (`test_chunk_backups`) and refreshed docs (`QUICK_REFERENCE.md`, `CHANGELOG.md`) with recovery guidance.
+- Tests: `cd /Users/brentbryson/Desktop/mini-rag && ./venv/bin/python - <<'PY' … test_chunk_backups … PY` (success ✅). For full re-run press `Cmd` + `Shift` + `T` if you want Cursor to rerun the last terminal command.
+- Added `restore_chunk_backup` plus `raglite restore-backup` CLI support with JSON responses and graceful error messaging.
+- Extended `test_chunk_backups` to exercise CLI + helper restore flows, confirming round-trip recovery.
+- Documented the restore command + macOS shortcuts in `docs/guides/QUICK_REFERENCE.md` and logged the feature in `CHANGELOG.md`.
+- Relocated planning docs into `docs/project/` so the repository root only holds runtime/service artifacts.
+
+---
+
+# Phase 4 Restore Plan (Nov 18, 2025)
+
+**Goal:** Add a safe restoration path so operators can roll back to the latest chunk snapshot without manual file juggling.
+
+## TODOs
+- [x] **P4-E4: Implement chunk restore helper**
+  - Added `restore_chunk_backup` in `chunk_backup.py` with validation, automatic `latest.jsonl` updates, and pre-restore snapshots for rollback safety.
+- [x] **P4-E5: Wire restore helper into tooling + tests**
+  - Introduced `raglite restore-backup` CLI (JSON output) and expanded `test_chunk_backups` to cover CLI + helper restore flows end-to-end.
+- [x] **P4-E6: Document restore workflow**
+  - Refreshed `docs/guides/QUICK_REFERENCE.md` backup playbook and noted the feature in `CHANGELOG.md`, including macOS-friendly restore commands.
+
+**Status:** ✅ Completed – restore tooling shipped with tests + docs.
+
+---
+
+# Phase 4 Transaction Plan (Nov 18, 2025)
+
+**Goal:** Ensure chunk mutations behave like mini-transactions so partial writes never hit `out/chunks.jsonl`.
+
+## TODOs
+- [x] **P4-E7: Design transactional write strategy**
+  - Adopt copy-on-write: write chunks to `<path>.staged` by copying the existing file (if any) plus new rows, `fsync`, then `os.replace` so the swap is atomic and backup remains prior version.
+- [x] **P4-E8: Implement transactional writes**
+  - `raglite.write_jsonl` now stages to `<path>.staged` and swaps atomically; rewrite flows were already using temp files so no change required.
+- [x] **P4-E9: Extend tests + docs**
+  - `test_chunk_backups` verifies staging cleanup + row counts, and the quick reference / changelog highlight the transactional guarantee.
+
+**Status:** ✅ Completed – transactional writes tested and documented.
 
 ---
 
@@ -360,20 +402,17 @@ All changes followed these principles:
 **Goal:** Reduce root-level clutter by grouping docs, samples, and scripts while keeping runtime paths stable.
 
 ## TODOs
-- [ ] **RC1: Inventory current tree**
-  - Capture current root layout and identify files to relocate (docs vs. runtime vs. scripts)
-- [ ] **RC2: Move supporting assets into dedicated folders**
-  - Consolidate reference docs under `docs/` (e.g., phase summaries, setup guides)
-  - Group sample transcripts and source lists under `examples/`
-  - Ensure runtime directories (`out/`, `logs/`, `var/`) remain documented and functional
-- [ ] **RC3: Update references and helper scripts**
-  - Adjust scripts/default paths (e.g., `scripts/ingest/ingest_all.sh`) to new locations
-  - Update README/CHANGELOG if paths change materially
-- [ ] **RC4: Verify & document**
-  - Run targeted checks (smoke tests or lint) if needed
-  - Summarize changes in the Review section
-- [ ] **RC5: Stage and commit**
-  - Prepare concise commit summarizing reorganization
+- [x] **RC1: Inventory current tree**
+  - Captured current root layout; grouped files into categories (runtime artifacts, docs, scripts, examples).
+- [x] **RC2: Move supporting assets into dedicated folders**
+  - Relocated `project/` (blueprints, build plan, workflow) into `docs/project/` to consolidate planning docs.
+  - Left `examples/` and runtime dirs (`out/`, `logs/`, `var/`) in place; doc references updated below.
+- [x] **RC3: Update references and helper scripts**
+  - No script/README path updates required; verified via `git grep 'project/'` (only conceptual mentions remain).
+- [x] **RC4: Verify & document**
+  - Added review notes + changelog entry for the relocation (no code changes needed).
+- [x] **RC5: Stage and commit**
+  - Ready for staging once you review; no commit performed in this workspace.
 
 **Status:** Draft – awaiting your approval before we execute tasks.
 

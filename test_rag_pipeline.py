@@ -11,12 +11,21 @@ Run with: python test_rag_pipeline.py
 """
 
 import asyncio
+import json
 import os
+import subprocess
 import sys
 import logging
+import tempfile
+from pathlib import Path
 
 from rag_pipeline import RAGPipeline, RetrieveOptions
 from model_service_impl import ConcreteModelService
+from raglite import write_jsonl
+from retrieval import delete_source_chunks, get_unique_sources, load_chunks
+from chunk_backup import restore_chunk_backup
+
+ROOT_DIR = Path(__file__).resolve().parent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -230,6 +239,197 @@ async def test_abstention():
     return True
 
 
+async def test_chunk_backups():
+    """Test that chunk backups are created for append and rewrite flows."""
+    print("\n" + "="*60)
+    print("TEST 5: Chunk Backup Safety")
+    print("="*60)
+
+    success = True
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        chunks_path = os.path.join(tmp_dir, "chunks.jsonl")
+        backups_dir = Path(tmp_dir) / "backups"
+        timestamp_files = []
+
+        row1 = {
+            "id": "phase4-test-1",
+            "source": {"type": "document", "path": "phase4-doc.md"},
+            "content": "Phase 4 backup seed",
+        }
+        row2 = {
+            "id": "phase4-test-2",
+            "source": {"type": "document", "path": "phase4-doc.md"},
+            "content": "Phase 4 backup append",
+        }
+
+        # Initial write (no backup expected because file does not yet exist).
+        write_jsonl(chunks_path, [row1])
+        initial_content = Path(chunks_path).read_text()
+
+        # Second write should snapshot the existing content before appending.
+        write_jsonl(chunks_path, [row2])
+
+        staged_path = Path(f"{chunks_path}.staged")
+        if staged_path.exists():
+            print(f"✗ Staged file still present: {staged_path}")
+            success = False
+        else:
+            print("✓ Staged append cleaned up temp file")
+
+        combined_lines = Path(chunks_path).read_text().splitlines()
+        if len(combined_lines) == 2:
+            print("✓ Transactional append preserved both rows")
+        else:
+            print(f"✗ Unexpected row count after append: {len(combined_lines)}")
+            success = False
+
+        if not backups_dir.exists():
+            print("✗ Backup directory not created after append")
+            success = False
+        else:
+            timestamp_files = sorted(
+                f for f in os.listdir(backups_dir) if f.startswith("chunks-")
+            )
+            latest_path = backups_dir / "latest.jsonl"
+
+            if not timestamp_files:
+                print("✗ No timestamped backups found after append")
+                success = False
+            else:
+                print(f"✓ Created {len(timestamp_files)} timestamped backup(s) after append")
+
+            if not latest_path.exists():
+                print("✗ Latest backup pointer missing after append")
+                success = False
+            else:
+                latest_content = latest_path.read_text()
+                if latest_content == initial_content:
+                    print("✓ Latest backup preserves pre-append content")
+                else:
+                    print("✗ Latest backup content mismatch after append")
+                    success = False
+        if not success:
+            return False
+
+        pre_delete_content = Path(chunks_path).read_text()
+        chunks = load_chunks(chunks_path)
+        sources = get_unique_sources(chunks)
+        if not sources:
+            print("✗ Unable to determine source for deletion test")
+            return False
+        source_id = sources[0]["id"]
+
+        backup_result = delete_source_chunks(chunks_path, source_id)
+        backup_path = backup_result.get("backup_path")
+        timestamp_files_after = sorted(
+            f for f in os.listdir(backups_dir) if f.startswith("chunks-")
+        )
+
+        if not backup_path:
+            print("✗ delete_source_chunks did not report a backup path")
+            success = False
+        elif not Path(backup_path).exists():
+            print(f"✗ Reported backup missing: {backup_path}")
+            success = False
+        else:
+            print(f"✓ delete_source_chunks created backup: {Path(backup_path).name}")
+
+        if len(timestamp_files_after) <= len(timestamp_files):
+            print("✗ Rewrite did not create a new timestamped backup")
+            success = False
+        else:
+            print("✓ Rewrite created an additional timestamped backup")
+
+        latest_after = (backups_dir / "latest.jsonl").read_text()
+        if latest_after == pre_delete_content:
+            print("✓ Latest backup now mirrors pre-delete content")
+        else:
+            print("✗ Latest backup not updated prior to delete rewrite")
+            success = False
+
+        final_chunks = load_chunks(chunks_path)
+        if final_chunks:
+            print(f"✗ Expected empty file after deletion, found {len(final_chunks)} chunks")
+            success = False
+        else:
+            print("✓ Chunks file rewritten successfully after deletion")
+
+        # Exercise CLI restore command (defaults to latest backup).
+        restore_cmd = [
+            sys.executable,
+            "raglite.py",
+            "restore-backup",
+            "--chunks",
+            chunks_path,
+        ]
+        try:
+            proc = subprocess.run(
+                restore_cmd,
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            print(f"✗ CLI restore failed: {exc.stderr or exc.stdout}")
+            return False
+
+        try:
+            restore_payload = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError:
+            print("✗ CLI restore did not return valid JSON")
+            return False
+
+        restored_from = restore_payload.get("restored_from")
+        if restore_payload.get("error"):
+            print(f"✗ CLI restore reported error: {restore_payload['error']}")
+            success = False
+        elif not restored_from:
+            print("✗ CLI restore did not report source backup")
+            success = False
+        else:
+            print("✓ CLI restore reported success")
+
+        pre_restore_snapshot = restore_payload.get("pre_backup")
+        if pre_restore_snapshot and Path(pre_restore_snapshot).exists():
+            print("✓ Restore captured a pre-restore snapshot")
+        else:
+            print("✗ Restore did not capture a pre-restore snapshot")
+            success = False
+
+        timestamp_files_final = sorted(
+            f for f in os.listdir(backups_dir) if f.startswith("chunks-")
+        )
+        if len(timestamp_files_final) <= len(timestamp_files_after):
+            print("✗ Restore did not create an additional timestamped backup")
+            success = False
+        else:
+            print("✓ Restore recorded an additional timestamped backup")
+
+        restored_content = Path(chunks_path).read_text()
+        if restored_content == pre_delete_content:
+            print("✓ CLI restore reinstated chunk content")
+        else:
+            print("✗ CLI restore produced unexpected chunk content")
+            success = False
+
+        # Explicit helper restore (skip_prebackup avoids duplicate snapshots).
+        restore_chunk_backup(
+            chunks_path,
+            backup_path=restored_from,
+            skip_prebackup=True,
+        )
+        helper_restored = Path(chunks_path).read_text()
+        if helper_restored == pre_delete_content:
+            print("✓ Direct helper restore matches expected content")
+        else:
+            print("✗ Direct helper restore mismatch")
+            success = False
+
+    return success
+
+
 async def main():
     """Run all tests."""
     print("="*60)
@@ -265,6 +465,13 @@ async def main():
     except Exception as e:
         print(f"\n✗ Test 4 failed: {e}")
         results.append(("Abstention", False))
+    
+    # Test 5: Chunk backups
+    try:
+        results.append(("Chunk Backup Safety", await test_chunk_backups()))
+    except Exception as e:
+        print(f"\n✗ Test 5 failed: {e}")
+        results.append(("Chunk Backup Safety", False))
     
     # Summary
     print("\n" + "="*60)

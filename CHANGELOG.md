@@ -11,5 +11,11 @@
 - Ran full test suite (`cd /Users/brentbryson/Desktop/mini-rag && ./venv/bin/python3 test_phase3_auth.py`); **all 7 tests passed** ✅ (no skips or failures) with FakeDatabase fallback standing in for PostgreSQL.
 - Hardened Google OAuth environment loading by pointing `auth.py` directly at the repo `.env`, ensuring CLI utilities launched via stdin also register `oauth.google`.
 - Documented remaining manual verification items: capture full browser-based OAuth flow evidence and repeat UserService checks against a live PostgreSQL/pgvector stack when available.
+- Added `chunk_backup.py` to snapshot `out/chunks.jsonl` before ingestion, dedupe, or delete rewrites; integrated backups into `raglite`, `retrieval`, and `server`.
+- Extended `test_rag_pipeline.py` with `test_chunk_backups` to confirm append/rewrite flows produce timestamped backups plus a `backups/latest.jsonl` pointer.
+- Updated `docs/guides/QUICK_REFERENCE.md` with a backup recovery playbook (including macOS-friendly restore commands).
+- Added `restore_chunk_backup` helper and `raglite restore-backup` CLI subcommand, with automated tests covering full restore workflows.
+- Made `raglite.write_jsonl` transactional via copy-on-write staging and expanded tests/docs to reflect the atomic swap behavior.
+- Moved planning documents from `project/` to `docs/project/` to tidy the repository root.
 
 
