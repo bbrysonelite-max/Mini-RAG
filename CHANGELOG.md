@@ -17,5 +17,6 @@
 - Added `restore_chunk_backup` helper and `raglite restore-backup` CLI subcommand, with automated tests covering full restore workflows.
 - Made `raglite.write_jsonl` transactional via copy-on-write staging and expanded tests/docs to reflect the atomic swap behavior.
 - Moved planning documents from `project/` to `docs/project/` to tidy the repository root.
+- Added versioned REST router at `/api/v1` (legacy `/api/*` routes remain available during transition) and refreshed API metadata.
 
 

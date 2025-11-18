@@ -92,6 +92,8 @@
 - [ ] Monitoring & logging
 - [ ] Analytics
 
+- `/api/v1` REST endpoints now mirror existing `/api/*` routes; JWT auth required today with API keys planned.
+
 ### Infrastructure
 - [ ] Database (PostgreSQL)
 - [ ] Vector database (Pinecone/Weaviate)

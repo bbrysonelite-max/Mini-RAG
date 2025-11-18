@@ -414,7 +414,45 @@ All changes followed these principles:
 - [x] **RC5: Stage and commit**
   - Ready for staging once you review; no commit performed in this workspace.
 
-**Status:** Draft – awaiting your approval before we execute tasks.
+**Status:** ✅ Completed – repository structure aligned with docs vs runtime separation.
+
+---
+
+# Phase 5 Kickoff Plan (Nov 18, 2025)
+
+**Goal:** Stand up the commercial readiness foundation (multi-tenant model + API contract).
+
+- [x] **P5-K1: Map Phase 5 backlog**
+  - Quick wins (days): expose `/api/v1/` router + OpenAPI polish, API keys piggybacking on JWT, user/API docs pass, Docker image + secrets template.
+  - Medium lifts (weeks): environment config tooling, CI/CD pipeline, basic org workspace schema, usage quotas instrumentation.
+  - Major initiatives (multi-week): full data isolation + billing/subscription flows, webhooks + SDKs, Kubernetes/horizontal scaling, compliance (GDPR, retention, policies).
+- [x] **P5-K2: Draft multi-tenant data model plan**
+  - Staged approach: `organizations` + `workspaces`, membership tables (`user_organizations`, `workspace_members`), chunk annotations (`workspace_id`), quota tracking tables, default migration script for legacy data.
+- [x] **P5-K3: Outline API v1 surface**
+  - Proposed `/api/v1/` structure (health, auth/token, sources, chunks, admin), JWT + API keys auth layering, per-tenant rate limits, OpenAPI tagging.
+
+**Status:** ✅ Kickoff plan ready – awaiting your go/no-go for implementation tracks.
+
+## Review
+- Phase 4 robustness + cleanup complete and committed (`feat: add chunk backup recovery and tidy docs`).
+- Phase 5 kickoff plan finalized (P5-K1..K3) and ready for execution.
+- `/api/v1` router + metadata + docs updates shipped (P5-A1..A3); legacy `/api/*` paths remain during migration.
+
+---
+
+# Phase 5 Execution – API Quick Wins (Nov 18, 2025)
+
+**Goal:** Ship versioned REST skeleton with minimal disruption.
+
+## TODOs
+- [ ] **P5-A1: Introduce `/api/v1` router**
+  - Register an `APIRouter` in `server.py` and expose existing REST endpoints under the versioned prefix while keeping legacy paths.
+- [ ] **P5-A2: Refresh OpenAPI metadata**
+  - Ensure `/docs` reflects versioned routes and note API key/JWT requirements placeholder.
+- [ ] **P5-A3: Document rollout**
+  - Update `CHANGELOG.md` + quick reference with API v1 notes and dual-route guidance.
+
+**Status:** Starting with P5-A1.
 
 ---
 

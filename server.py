@@ -2,7 +2,7 @@
 import os, json, subprocess, hashlib, re, logging
 from typing import List, Optional, Dict, Any
 from pathlib import Path
-from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, APIRouter, Form, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, validator
@@ -33,7 +33,18 @@ except ImportError as e:
     get_user_service = None
 
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
-app = FastAPI(title="RAG Talking Agent (with Ingest)")
+API_DESCRIPTION = (
+    "RAG Talking Agent backend.\n\n"
+    "Versioned REST endpoints are available under `/api/v1`. "
+    "Authentication currently uses Google OAuth JWTs; API key support is planned."
+)
+
+app = FastAPI(
+    title="RAG Talking Agent (with Ingest)",
+    version="1.0.0",
+    description=API_DESCRIPTION,
+)
+api_v1 = APIRouter(prefix="/api/v1", tags=["v1"])
 
 # Session middleware (required for OAuth)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "change-this-secret-key-in-production"))
@@ -516,6 +527,7 @@ def _process_query(query: str, k: int, user: Dict[str, Any]):
 @app.get("/api/stats")
 def stats():
     return {"count": _count_lines(CHUNKS_PATH)}
+api_v1.get("/stats")(stats)
 
 def validate_youtube_url(url: str) -> bool:
     """Validate YouTube URL format."""
@@ -613,6 +625,7 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
                 error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
                 results.append({"url": url, "error": error_msg, "written": 0})
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
+api_v1.post("/ingest/urls")(ingest_urls)
 
 @app.post("/api/ingest_files")
 @app.post("/ingest/files")
@@ -693,6 +706,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         total += int(r.get("written", 0) or 0)
     
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
+api_v1.post("/ingest/files")(ingest_files)
 
 @app.post("/api/dedupe")
 @app.post("/dedupe")
@@ -745,6 +759,7 @@ def dedupe(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to dedupe chunks: {err}") from err
 
     return {"kept": kept, "total_before": total, "count": _count_lines(CHUNKS_PATH)}
+api_v1.post("/dedupe")(dedupe)
 
 @app.get("/api/sources")
 def get_sources(request: Request):
@@ -755,6 +770,7 @@ def get_sources(request: Request):
     user_id = user.get('user_id') if user else None
     sources = get_unique_sources(CHUNKS, user_id=user_id)
     return {"sources": sources, "count": len(sources)}
+api_v1.get("/sources")(get_sources)
 
 @app.get("/api/sources/{source_id}/chunks")
 def get_source_chunks(request: Request, source_id: str):
@@ -765,6 +781,7 @@ def get_source_chunks(request: Request, source_id: str):
     user_id = user.get('user_id') if user else None
     chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
     return {"chunks": chunks, "count": len(chunks)}
+api_v1.get("/sources/{source_id}/chunks")(get_source_chunks)
 
 @app.delete("/api/sources/{source_id}")
 def delete_source(request: Request, source_id: str):
@@ -783,6 +800,7 @@ def delete_source(request: Request, source_id: str):
     INDEX = None
     CHUNKS = []
     return result
+api_v1.delete("/sources/{source_id}")(delete_source)
 
 @app.get("/api/sources/{source_id}/preview")
 def get_source_preview(request: Request, source_id: str, limit: int = 3):
@@ -794,6 +812,7 @@ def get_source_preview(request: Request, source_id: str, limit: int = 3):
     chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
     preview = chunks[:limit]
     return {"preview": preview, "total_chunks": len(chunks)}
+api_v1.get("/sources/{source_id}/preview")(get_source_preview)
 
 @app.get("/api/search")
 def search_source(request: Request, query: str, source_id: str = None, k: int = 8):
@@ -822,6 +841,7 @@ def search_source(request: Request, query: str, source_id: str = None, k: int = 
             "citation": format_citation(chunk)
         })
     return {"chunks": chunks_with_scores, "query": query}
+api_v1.get("/search")(search_source)
 
 @app.post("/api/rebuild")
 @app.post("/rebuild")
@@ -840,6 +860,7 @@ def rebuild_index(request: Request):
     CHUNKS = []
     ensure_index()
     return {"status": "rebuilt", "count": len(CHUNKS)}
+api_v1.post("/rebuild")(rebuild_index)
 
 # Admin-only endpoints
 @app.get("/api/admin/users")
@@ -856,6 +877,7 @@ async def list_users(request: Request):
     
     users = await USER_SERVICE.list_all_users()
     return {"users": users, "count": len(users)}
+api_v1.get("/admin/users")(list_users)
 
 @app.patch("/api/admin/users/{user_id}/role")
 async def update_user_role(request: Request, user_id: str, role: str = Form(...)):
@@ -882,6 +904,7 @@ async def update_user_role(request: Request, user_id: str, role: str = Form(...)
         raise HTTPException(status_code=404, detail="User not found")
     
     return {"user": updated_user, "message": f"User role updated to {role}"}
+api_v1.patch("/admin/users/{user_id}/role")(update_user_role)
 
 @app.get("/api/admin/stats")
 def admin_stats(request: Request):
@@ -908,3 +931,7 @@ def admin_stats(request: Request):
         "database_available": DB is not None,
         "auth_available": AUTH_AVAILABLE
     }
+api_v1.get("/admin/stats")(admin_stats)
+
+app.include_router(api_v1)
+api_v1.get("/admin/stats")(admin_stats)
