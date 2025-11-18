@@ -11,7 +11,7 @@ def load_chunks(path):
             ln=ln.strip()
             if not ln: continue
             try: items.append(json.loads(ln))
-            except: pass
+            except json.JSONDecodeError: pass
     return items
 class SimpleIndex:
     def __init__(self,chunks):
@@ -19,10 +19,27 @@ class SimpleIndex:
         docs=[c.get("content","") for c in chunks]
         toks=[_tok(d) for d in docs]
         self.bm25=BM25Okapi(toks)
-    def search(self,query,k=8):
+    def search(self,query,k=8,user_id=None):
         q=_tok(query or "")
         scores=self.bm25.get_scores(q)
-        return sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:k]
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        
+        # Filter by user_id if provided
+        if user_id:
+            filtered = []
+            for idx, score in ranked:
+                chunk = self.chunks[idx]
+                chunk_user_id = chunk.get("user_id")
+                # Include chunk if:
+                # 1. It belongs to the user
+                # 2. It has no user_id (legacy/public content)
+                if chunk_user_id is None or chunk_user_id == user_id:
+                    filtered.append((idx, score))
+                    if len(filtered) >= k:
+                        break
+            return filtered
+        
+        return ranked[:k]
 def format_citation(chunk):
     src=chunk.get("source",{}); meta=chunk.get("metadata",{})
     if src.get("type")=="youtube":
@@ -40,10 +57,17 @@ def _source_id(source: Dict[str, Any]) -> str:
     h.update(f"{src_type}:{path_or_url}".encode("utf-8"))
     return h.hexdigest()[:32]
 
-def get_unique_sources(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract unique sources with metadata from chunks."""
+def get_unique_sources(chunks: List[Dict[str, Any]], user_id: str = None) -> List[Dict[str, Any]]:
+    """Extract unique sources with metadata from chunks, optionally filtered by user_id."""
     sources_map = {}
     for chunk in chunks:
+        # Filter by user_id if provided
+        if user_id:
+            chunk_user_id = chunk.get("user_id")
+            # Only include if chunk belongs to user or has no user_id (legacy/public)
+            if chunk_user_id is not None and chunk_user_id != user_id:
+                continue
+        
         src = chunk.get("source", {})
         if not src:
             continue
@@ -63,9 +87,19 @@ def get_unique_sources(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         sources_map[sid]["chunk_count"] += 1
     return list(sources_map.values())
 
-def get_chunks_by_source(chunks: List[Dict[str, Any]], source_id: str) -> List[Dict[str, Any]]:
-    """Get all chunks for a specific source."""
-    return [c for c in chunks if _source_id(c.get("source", {})) == source_id]
+def get_chunks_by_source(chunks: List[Dict[str, Any]], source_id: str, user_id: str = None) -> List[Dict[str, Any]]:
+    """Get all chunks for a specific source, optionally filtered by user_id."""
+    result = []
+    for c in chunks:
+        if _source_id(c.get("source", {})) == source_id:
+            # Filter by user_id if provided
+            if user_id:
+                chunk_user_id = c.get("user_id")
+                # Only include if chunk belongs to user or has no user_id
+                if chunk_user_id is not None and chunk_user_id != user_id:
+                    continue
+            result.append(c)
+    return result
 
 def delete_source_chunks(path: str, source_id: str) -> Dict[str, Any]:
     """Delete all chunks for a source from the chunks file."""

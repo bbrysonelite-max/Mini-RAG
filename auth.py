@@ -4,6 +4,7 @@ Handles OAuth flow, JWT token generation/validation, and user session management
 """
 
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
@@ -12,8 +13,14 @@ from starlette.requests import Request
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (support both standard runs and stdin-launched scripts)
+PROJECT_ROOT = Path(__file__).resolve().parent
+DOTENV_PATH = PROJECT_ROOT / ".env"
+if DOTENV_PATH.exists():
+    load_dotenv(dotenv_path=DOTENV_PATH)
+else:
+    # Fall back to default discovery so containerized deployments can inject values
+    load_dotenv()
 
 # Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -73,7 +80,9 @@ def get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
         "email": payload.get("email"),
         "name": payload.get("name"),
         "picture": payload.get("picture"),
-        "sub": payload.get("sub")
+        "sub": payload.get("sub"),
+        "user_id": payload.get("user_id"),  # UUID from database
+        "role": payload.get("role", "reader")  # Default to reader
     }
 
 

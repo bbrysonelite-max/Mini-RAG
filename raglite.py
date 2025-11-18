@@ -86,7 +86,7 @@ def parse_vtt(path: str):
         parts.append((start, end, c.text.replace("\n", " ").strip()))
     return parts
 
-def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en"):
+def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".srt":
         parts = parse_srt(path)
@@ -100,7 +100,7 @@ def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en"):
     rows, total = [], len(chunks)
     for idx, (start, end, text) in enumerate(chunks):
         rid = stable_id(text, {"path": path, "start": start, "end": end})
-        rows.append({
+        chunk = {
             "id": rid,
             "source": {"type": "transcript_file", "path": path},
             "content": text,
@@ -109,7 +109,11 @@ def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en"):
                 "start_sec": float(round(start, 2)), "end_sec": float(round(end, 2)),
                 "created_at": datetime.datetime.utcnow().isoformat() + "Z"
             }
-        })
+        }
+        # Add user_id if provided
+        if user_id:
+            chunk["user_id"] = user_id
+        rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl}
 
@@ -121,7 +125,7 @@ def read_pdf(path: str) -> str:
     for page in reader.pages:
         try:
             texts.append(page.extract_text() or "")
-        except Exception:
+        except (ValueError, AttributeError, KeyError):
             continue
     return "\n".join(texts)
 
@@ -133,7 +137,7 @@ def read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en"):
+def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
         text = read_pdf(path)
@@ -145,7 +149,7 @@ def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en"):
     rows, total = [], len(chunks)
     for idx, c in enumerate(chunks):
         rid = stable_id(c, {"path": path, "idx": idx})
-        rows.append({
+        chunk = {
             "id": rid,
             "source": {"type": "document", "path": path},
             "content": c,
@@ -153,7 +157,11 @@ def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en"):
                 "language": language, "chunk_index": idx, "chunk_count": total,
                 "doc_section": None, "created_at": datetime.datetime.utcnow().isoformat() + "Z"
             }
-        })
+        }
+        # Add user_id if provided
+        if user_id:
+            chunk["user_id"] = user_id
+        rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl}
 
@@ -165,22 +173,23 @@ def _extract_video_id(url: str):
 def fetch_youtube_transcript(video_id: str, lang="en"):
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
         transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
         try:
             t = transcripts.find_transcript([lang])
             return t.fetch()
-        except Exception:
+        except (NoTranscriptFound, TranscriptsDisabled):
             pass
         for t in transcripts:
             try:
                 return t.fetch()
-            except Exception:
+            except (NoTranscriptFound, TranscriptsDisabled):
                 continue
-    except Exception:
+    except (TranscriptsDisabled, NoTranscriptFound, ValueError):
         return None
     return None
 
-def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en"):
+def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
     vid = _extract_video_id(url)
     if not vid:
         raise ValueError("Could not extract video id from URL")
@@ -192,7 +201,7 @@ def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en"):
     rows, total = [], len(chunks)
     for idx, (start, end, text) in enumerate(chunks):
         rid = stable_id(text, {"url": url, "start": start, "end": end})
-        rows.append({
+        chunk = {
             "id": rid,
             "source": {"type": "youtube", "url": url},
             "content": text,
@@ -201,7 +210,11 @@ def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en"):
                 "start_sec": float(round(start, 2)), "end_sec": float(round(end, 2)),
                 "created_at": datetime.datetime.utcnow().isoformat() + "Z"
             }
-        })
+        }
+        # Add user_id if provided
+        if user_id:
+            chunk["user_id"] = user_id
+        rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl, "video_id": vid}
 
@@ -219,7 +232,7 @@ def load_chunks(path: str):
                 continue
             try:
                 items.append(json.loads(line))
-            except Exception:
+            except json.JSONDecodeError:
                 pass
     return items
 

@@ -50,6 +50,61 @@ Before fixing any bug:
 
 ## Documented Bugs
 
+### Bug: Bare Exception Handlers
+**Date:** 2025-11-17
+**File(s):** retrieval.py, ingest_common.py, server.py, raglite.py
+**Symptoms:** Bare `except:` and `except Exception:` clauses swallow errors silently
+**Root Cause:** Generic exception handling without specific types
+**Fix:** Replaced with specific exception types:
+- JSON parsing: `except json.JSONDecodeError`
+- PDF extraction: `except (ValueError, AttributeError, KeyError)`
+- YouTube API: `except (NoTranscriptFound, TranscriptsDisabled)`
+**Verification:** All exception handlers now catch specific types, logging works properly
+
+### Bug: Missing Custom Exception Classes
+**Date:** 2025-11-17
+**File(s):** server.py
+**Symptoms:** Using HTTPException for all errors, no custom error handling
+**Root Cause:** No domain-specific exceptions defined
+**Fix:** Created custom exception hierarchy:
+- `RAGError` (base)
+- `IndexNotFoundError`
+- `InvalidQueryError`
+- `IngestionError`
+Added FastAPI exception handlers for RAGError and general exceptions
+**Verification:** Custom exceptions raise appropriate 400/500 status codes with sanitized messages
+
+### Bug: Basic Logging Without Rotation
+**Date:** 2025-11-17
+**File(s):** server.py
+**Symptoms:** Simple logging.basicConfig with no rotation or proper formatting
+**Root Cause:** Development-level logging configuration
+**Fix:** Implemented production logging:
+- RotatingFileHandler (10MB max, 5 backups)
+- Separate console handler (WARNING level)
+- Structured log format with timestamps
+- Logs stored in logs/ directory
+**Verification:** Logs rotate properly, formatted output, separate file/console levels
+
+### Bug: No Request Timeouts
+**Date:** 2025-11-17
+**File(s):** server.py
+**Symptoms:** Long-running queries could hang indefinitely
+**Root Cause:** Synchronous processing without timeout
+**Fix:** Made /ask endpoint async with 30-second timeout:
+- Used `asyncio.wait_for` with `asyncio.to_thread`
+- Returns 504 on timeout
+- Moved processing to `_process_query` helper
+**Verification:** Queries timeout after 30 seconds with proper error message
+
+### Bug: Internal Path Exposure
+**Date:** 2025-11-17
+**File(s):** server.py
+**Symptoms:** /api/stats endpoint exposed internal CHUNKS_PATH
+**Root Cause:** Debugging convenience left in production code
+**Fix:** Removed `"path": CHUNKS_PATH` from stats response
+**Verification:** API responses don't expose internal file paths
+
 ### Bug Template
 When documenting a new bug, use this format:
 

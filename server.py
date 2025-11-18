@@ -1,6 +1,6 @@
 
 import os, json, subprocess, hashlib, re, logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -13,9 +13,22 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from retrieval import load_chunks, SimpleIndex, format_citation, get_unique_sources, get_chunks_by_source, delete_source_chunks
 from score import score_answer
-from ingest_youtube import ingest_youtube
-from ingest_transcript import ingest_transcript
-from ingest_docs import ingest_docs
+# Import ingestion functions directly from raglite for user_id support
+from raglite import ingest_youtube, ingest_transcript, ingest_docs
+
+# Import database (optional - server works without it)
+try:
+    from database import Database, init_database
+    from user_service import UserService, get_user_service
+    DATABASE_AVAILABLE = True
+except ImportError as e:
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning(f"Database module not available: {e}")
+    DATABASE_AVAILABLE = False
+    Database = None
+    init_database = None
+    UserService = None
+    get_user_service = None
 
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 app = FastAPI(title="RAG Talking Agent (with Ingest)")
@@ -31,8 +44,80 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    """Configure application logging with rotation."""
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create logger
+    log = logging.getLogger("rag")
+    log.setLevel(logging.INFO)
+    
+    # File handler with rotation
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "rag.log"),
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
+    
+    # Formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    log.addHandler(file_handler)
+    log.addHandler(console_handler)
+    
+    return log
+
+logger = setup_logging()
+
+# Custom exceptions
+class RAGError(Exception):
+    """Base exception for RAG system."""
+    pass
+
+class IndexNotFoundError(RAGError):
+    """Raised when index is not found or cannot be loaded."""
+    pass
+
+class InvalidQueryError(RAGError):
+    """Raised when query is invalid."""
+    pass
+
+class IngestionError(RAGError):
+    """Raised when ingestion fails."""
+    pass
+
+# Exception handlers
+@app.exception_handler(RAGError)
+async def rag_error_handler(request: Request, exc: RAGError):
+    """Handle RAG-specific errors."""
+    logger.error(f"RAG Error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": str(exc) or "An error occurred processing your request",
+            "type": type(exc).__name__
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle unexpected errors without exposing internal details."""
+    logger.exception(f"Unexpected error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "An internal error occurred. Please try again later."}
+    )
 
 # Import auth module (optional - server works without it)
 try:
@@ -96,6 +181,39 @@ def generate_safe_filename(original_filename: str) -> str:
     return f"{name_hash}_{sanitized}"
 
 INDEX=None; CHUNKS=[]
+
+# Database and user service globals
+DB: Optional[Database] = None
+USER_SERVICE: Optional[UserService] = None
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database connection on startup (if configured)."""
+    global DB, USER_SERVICE
+    
+    # Try to initialize database if connection string is provided
+    db_url = os.environ.get("DATABASE_URL")
+    if db_url and DATABASE_AVAILABLE:
+        try:
+            DB = await init_database(db_url, init_schema=False)
+            USER_SERVICE = get_user_service(DB)
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize database: {e}")
+            logger.warning("Server will run without database features")
+            DB = None
+            USER_SERVICE = None
+    else:
+        logger.info("No DATABASE_URL configured - running without database")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connection on shutdown."""
+    global DB
+    if DB:
+        # Database cleanup if needed
+        logger.info("Shutting down database connection")
+
 def _count_lines(path):
     try:
         with open(path,"r",encoding="utf-8") as f:
@@ -103,27 +221,82 @@ def _count_lines(path):
     except FileNotFoundError:
         return 0
 
+def is_admin(user: Optional[Dict[str, Any]]) -> bool:
+    """Check if user has admin role."""
+    if not user:
+        return False
+    return user.get('role') == 'admin'
+
+def require_admin(user: Optional[Dict[str, Any]]):
+    """Raise exception if user is not admin."""
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+    if not is_admin(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Admin privileges required."
+        )
+
 def ensure_index():
     global INDEX, CHUNKS
     if INDEX is None:
         if not os.path.exists(CHUNKS_PATH):
             logger.error(f"Index not found at {CHUNKS_PATH}")
-            raise HTTPException(status_code=404, detail="Index not found. Please ingest documents first.")
+            raise IndexNotFoundError("Index not found. Please ingest documents first.")
         try:
             CHUNKS = load_chunks(CHUNKS_PATH)
         except Exception as e:
             logger.error(f"Failed to load chunks: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to load index. Please try rebuilding.")
+            raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
         if not CHUNKS:
-            raise HTTPException(status_code=404, detail="Index is empty. Please ingest documents first.")
+            raise IndexNotFoundError("Index is empty. Please ingest documents first.")
         try:
             INDEX = SimpleIndex(CHUNKS)
         except Exception as e:
             logger.error(f"Failed to build index: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to build search index.")
+            raise IndexNotFoundError("Failed to build search index.")
 
 @app.get("/")
 def root(): return HTMLResponse('<meta http-equiv="refresh" content="0; url=/app/">')
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring (public)."""
+    try:
+        # Check if index exists
+        if os.path.exists(CHUNKS_PATH):
+            chunks_count = _count_lines(CHUNKS_PATH)
+            index_status = "healthy" if chunks_count > 0 else "empty"
+        else:
+            index_status = "not_found"
+            chunks_count = 0
+        
+        # Check database connection
+        db_status = "not_configured"
+        if DB:
+            try:
+                await DB.fetch_one("SELECT 1")
+                db_status = "healthy"
+            except Exception as e:
+                logger.error(f"Database health check failed: {e}")
+                db_status = "unhealthy"
+        
+        return {
+            "status": "healthy",
+            "database": db_status,
+            "index": index_status,
+            "chunks_count": chunks_count,
+            "auth_available": AUTH_AVAILABLE
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}", exc_info=True)
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
 
 # OAuth Routes
 @app.get("/auth/google")
@@ -200,13 +373,38 @@ async def google_callback(request: Request):
             logger.error(f"Incomplete user info: email={email}, sub={sub}, user_info keys: {list(user_info.keys()) if isinstance(user_info, dict) else 'not a dict'}")
             return RedirectResponse(url="/app/?error=auth_failed")
         
+        # Save or update user in database (if available)
+        user_id = None
+        user_role = 'reader'  # default role
+        if USER_SERVICE:
+            try:
+                db_user = await USER_SERVICE.create_or_update_user(
+                    email=email,
+                    name=name,
+                    oauth_sub=sub,
+                    picture=picture
+                )
+                if db_user:
+                    user_id = str(db_user['id'])
+                    user_role = db_user['role']
+                    logger.info(f"User {email} saved to database with role: {user_role}")
+            except Exception as e:
+                logger.error(f"Failed to save user to database: {e}", exc_info=True)
+                # Continue anyway - auth can work without database
+        
         # Create JWT token
-        jwt_token = create_access_token({
+        jwt_payload = {
             "email": email,
             "name": name,
             "picture": picture,
-            "sub": sub
-        })
+            "sub": sub,
+        }
+        # Add user_id and role if we have them from database
+        if user_id:
+            jwt_payload["user_id"] = user_id
+            jwt_payload["role"] = user_role
+        
+        jwt_token = create_access_token(jwt_payload)
         
         # Redirect to app with token in cookie
         response = RedirectResponse(url="/app/")
@@ -242,15 +440,41 @@ async def get_me(request: Request):
 
 @app.post("/ask")
 @limiter.limit("30/minute")
-def ask(request: Request, query: str = Form(...), k: int = Form(8)):
+async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to use this feature."
+        )
+    
     # Validate input
     try:
         ask_req = AskRequest(query=query, k=k)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    # Add timeout for query processing
+    import asyncio
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user),
+            timeout=30.0  # 30 second timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Request timed out. Please try a simpler query or contact support."
+        )
+
+def _process_query(query: str, k: int, user: Dict[str, Any]):
+    """Process query synchronously (called from async context)."""
     ensure_index()
-    ranked = INDEX.search(ask_req.query, k=ask_req.k)
+    # Filter by user_id for data isolation
+    user_id = user.get('user_id') if user else None
+    ranked = INDEX.search(query, k=k, user_id=user_id)
     top = [CHUNKS[i] for i,_ in ranked]
     snippets = [c.get("content","").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]
@@ -289,7 +513,7 @@ def ask(request: Request, query: str = Form(...), k: int = Form(8)):
 
 @app.get("/api/stats")
 def stats():
-    return {"count": _count_lines(CHUNKS_PATH), "path": CHUNKS_PATH}
+    return {"count": _count_lines(CHUNKS_PATH)}
 
 def validate_youtube_url(url: str) -> bool:
     """Validate YouTube URL format."""
@@ -304,6 +528,14 @@ def validate_youtube_url(url: str) -> bool:
 @app.post("/ingest/urls")
 @limiter.limit("10/hour")
 def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("en")):
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to ingest content."
+        )
+    
     # Validate input
     try:
         url_req = IngestURLRequest(urls=urls, language=language)
@@ -314,13 +546,16 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
     results = []
     total = 0
     
+    # Get user_id from authenticated user
+    user_id = user.get('user_id') if user else None
+    
     for url in urls_list:
         # Validate YouTube URL format
         if not validate_youtube_url(url):
             results.append({"url": url, "error": "Invalid YouTube URL format", "written": 0})
             continue
         try:
-            r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=url_req.language)
+            r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=url_req.language, user_id=user_id)
             written = r.get("written", 0)
             if written == 0 and r.get("stderr"):
                 error_msg = r.get("stderr", "Unknown error")
@@ -369,7 +604,7 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
                 logger.warning(f"yt-dlp download failed for {url}: {e}")
                 vtt = ""
             if vtt:
-                r = ingest_transcript(vtt, out_jsonl=CHUNKS_PATH, language=url_req.language)
+                r = ingest_transcript(vtt, out_jsonl=CHUNKS_PATH, language=url_req.language, user_id=user_id)
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
                 total += r.get("written",0)
             else:
@@ -381,6 +616,14 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
 @app.post("/ingest/files")
 @limiter.limit("10/hour")
 async def ingest_files(request: Request, files: List[UploadFile] = File(...), language: str = Form("en")):
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to ingest content."
+        )
+    
     UPLOAD_DIR.mkdir(exist_ok=True)
     results = []
     total = 0
@@ -432,10 +675,13 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         # Process file
         lower = safe_name.lower()
         try:
+            # Get user_id from authenticated user
+            user_id = user.get('user_id') if user else None
+            
             if lower.endswith((".vtt", ".srt", ".txt")):
-                r = ingest_transcript(str(path), out_jsonl=CHUNKS_PATH, language=language)
+                r = ingest_transcript(str(path), out_jsonl=CHUNKS_PATH, language=language, user_id=user_id)
             elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
-                r = ingest_docs(str(path), out_jsonl=CHUNKS_PATH, language=language)
+                r = ingest_docs(str(path), out_jsonl=CHUNKS_PATH, language=language, user_id=user_id)
             else:
                 r = {"error": "unsupported file type"}
         except Exception as e:
@@ -448,7 +694,15 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
 
 @app.post("/api/dedupe")
 @app.post("/dedupe")
-def dedupe():
+def dedupe(request: Request):
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+    
     inp = CHUNKS_PATH; tmp = CHUNKS_PATH + ".tmp"
     seen=set(); kept=0; total=0
     try:
@@ -459,7 +713,7 @@ def dedupe():
                 total += 1
                 try:
                     obj=json.loads(line)
-                except Exception:
+                except json.JSONDecodeError:
                     continue
                 k = obj.get("id") or json.dumps(obj, sort_keys=True)
                 if k in seen: continue
@@ -471,49 +725,71 @@ def dedupe():
     return {"kept": kept, "total_before": total, "count": _count_lines(CHUNKS_PATH)}
 
 @app.get("/api/sources")
-def get_sources():
-    """List all unique sources with metadata."""
+def get_sources(request: Request):
+    """List all unique sources with metadata (filtered by user)."""
     ensure_index()
-    sources = get_unique_sources(CHUNKS)
+    # Get current user for filtering
+    user = get_current_user(request)
+    user_id = user.get('user_id') if user else None
+    sources = get_unique_sources(CHUNKS, user_id=user_id)
     return {"sources": sources, "count": len(sources)}
 
 @app.get("/api/sources/{source_id}/chunks")
-def get_source_chunks(source_id: str):
-    """Get all chunks for a specific source."""
+def get_source_chunks(request: Request, source_id: str):
+    """Get all chunks for a specific source (filtered by user)."""
     ensure_index()
-    chunks = get_chunks_by_source(CHUNKS, source_id)
+    # Get current user for filtering
+    user = get_current_user(request)
+    user_id = user.get('user_id') if user else None
+    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
     return {"chunks": chunks, "count": len(chunks)}
 
 @app.delete("/api/sources/{source_id}")
-def delete_source(source_id: str):
+def delete_source(request: Request, source_id: str):
     """Delete a source and all its chunks."""
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+    
     global INDEX, CHUNKS
+    # TODO: Verify user owns this source when data isolation is implemented
     result = delete_source_chunks(CHUNKS_PATH, source_id)
     INDEX = None
     CHUNKS = []
     return result
 
 @app.get("/api/sources/{source_id}/preview")
-def get_source_preview(source_id: str, limit: int = 3):
-    """Get preview of a source (first few chunks)."""
+def get_source_preview(request: Request, source_id: str, limit: int = 3):
+    """Get preview of a source (first few chunks, filtered by user)."""
     ensure_index()
-    chunks = get_chunks_by_source(CHUNKS, source_id)
+    # Get current user for filtering
+    user = get_current_user(request)
+    user_id = user.get('user_id') if user else None
+    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
     preview = chunks[:limit]
     return {"preview": preview, "total_chunks": len(chunks)}
 
 @app.get("/api/search")
-def search_source(query: str, source_id: str = None, k: int = 8):
-    """Search within all chunks or a specific source."""
+def search_source(request: Request, query: str, source_id: str = None, k: int = 8):
+    """Search within all chunks or a specific source (filtered by user)."""
     ensure_index()
+    # Get current user for filtering
+    user = get_current_user(request)
+    user_id = user.get('user_id') if user else None
+    
     if source_id:
-        source_chunks = get_chunks_by_source(CHUNKS, source_id)
+        source_chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
         if not source_chunks:
             return {"chunks": [], "scores": []}
         temp_index = SimpleIndex(source_chunks)
         ranked = temp_index.search(query, k=k)
         results = [(source_chunks[i], score) for i, score in ranked]
     else:
-        ranked = INDEX.search(query, k=k)
+        ranked = INDEX.search(query, k=k, user_id=user_id)
         results = [(CHUNKS[i], score) for i, score in ranked]
     
     chunks_with_scores = []
@@ -527,10 +803,86 @@ def search_source(query: str, source_id: str = None, k: int = 8):
 
 @app.post("/api/rebuild")
 @app.post("/rebuild")
-def rebuild_index():
+def rebuild_index(request: Request):
     """Rebuild the search index."""
+    # Require authentication
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+    
     global INDEX, CHUNKS
     INDEX = None
     CHUNKS = []
     ensure_index()
     return {"status": "rebuilt", "count": len(CHUNKS)}
+
+# Admin-only endpoints
+@app.get("/api/admin/users")
+async def list_users(request: Request):
+    """List all users (admin only)."""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    if not USER_SERVICE:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. User management requires database connection."
+        )
+    
+    users = await USER_SERVICE.list_all_users()
+    return {"users": users, "count": len(users)}
+
+@app.patch("/api/admin/users/{user_id}/role")
+async def update_user_role(request: Request, user_id: str, role: str = Form(...)):
+    """Update a user's role (admin only)."""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    if not USER_SERVICE:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. User management requires database connection."
+        )
+    
+    # Validate role
+    valid_roles = ['admin', 'editor', 'reader', 'owner']
+    if role not in valid_roles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+        )
+    
+    updated_user = await USER_SERVICE.update_user_role(user_id, role)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {"user": updated_user, "message": f"User role updated to {role}"}
+
+@app.get("/api/admin/stats")
+def admin_stats(request: Request):
+    """Get system-wide statistics (admin only)."""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    ensure_index()
+    
+    # Count chunks by user
+    user_chunks = {}
+    total_chunks = len(CHUNKS)
+    for chunk in CHUNKS:
+        uid = chunk.get('user_id', 'legacy')
+        user_chunks[uid] = user_chunks.get(uid, 0) + 1
+    
+    # Count sources
+    sources = get_unique_sources(CHUNKS)
+    
+    return {
+        "total_chunks": total_chunks,
+        "chunks_by_user": user_chunks,
+        "total_sources": len(sources),
+        "database_available": DB is not None,
+        "auth_available": AUTH_AVAILABLE
+    }
