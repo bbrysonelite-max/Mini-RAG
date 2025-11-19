@@ -8,5 +8,5 @@ def _run(cmd):
         line=line.strip()
         if line.startswith("{") and line.endswith("}"):
             try: return json.loads(line)
-            except: pass
+            except json.JSONDecodeError: pass
     return {"written":0,"stdout":p.stdout,"stderr":p.stderr}

@@ -78,4 +78,4 @@ htmlcov/
 
 # pyenv
 .python-version
-
+var/

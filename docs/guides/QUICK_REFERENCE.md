@@ -65,6 +65,15 @@
 - [ ] Resource limits
 - [ ] Graceful degradation
 
+#### Backup Recovery Playbook
+- All chunk mutations (CLI ingest, `/api/ingest_files`, `/api/dedupe`, `/api/sources/{id}` deletes) snapshot the live file to `backups/`.
+- Snapshots are stored as `backups/chunks-<timestamp>.jsonl` and mirrored to `backups/latest.jsonl` for quick restores.
+- On macOS you can restore via Terminal with `cp backups/latest.jsonl out/chunks.jsonl` (or press `Cmd` + `Shift` + `G` in Finder to jump to the project folder before copying).
+- Prefer the automated flow: `./venv/bin/python raglite.py restore-backup --chunks out/chunks.jsonl` restores from the latest snapshot; add `--backup backups/chunks-<timestamp>.jsonl` to pick a specific file.
+- Chunk writes use copy-on-write staging + `os.replace`, so ingestion either keeps the old file or atomically swaps in the fully-written version.
+- Keep older snapshots for audits and prune with a retention policy (for example, `find backups -type f -mtime +7 -delete`).
+- CLI ingest commands (`ingest-docs`, `ingest-transcript`, `ingest-youtube`) accept optional `--user-id` and `--workspace-id` flags so you can tag chunks from Terminal. Example: `./venv/bin/python raglite.py ingest-docs --path ./notes/intro.md --out out/chunks.jsonl --user-id $(uuidgen) --workspace-id default-workspace` (use `Cmd` + `Shift` + `.` in Finder to reveal hidden folders before copying paths).
+
 ### Usability
 - [ ] User-friendly error messages
 - [ ] Loading states
@@ -83,6 +92,8 @@
 - [ ] API documentation
 - [ ] Monitoring & logging
 - [ ] Analytics
+
+- `/api/v1` REST endpoints now mirror existing `/api/*` routes; JWT auth required today with API keys planned.
 
 ### Infrastructure
 - [ ] Database (PostgreSQL)
@@ -170,8 +181,8 @@
 
 ## 📚 Key Documents
 
-1. **COMMERCIAL_VIABILITY_ANALYSIS.md** - Full analysis
-2. **CRITICAL_FIXES_GUIDE.md** - Code-level fixes
+1. **docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md** - Full analysis
+2. **docs/guides/CRITICAL_FIXES_GUIDE.md** - Code-level fixes
 3. **This document** - Quick reference
 
 ## 🔗 Useful Resources

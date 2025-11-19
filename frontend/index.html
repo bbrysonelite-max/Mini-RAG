@@ -44,6 +44,13 @@ a:hover{color:#333}
   <div id="tabAsk" class="tab active">Ask</div>
   <div id="tabBrowser" class="tab">Browser</div>
   <div id="tabIngest" class="tab">Ingest</div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:0.5rem">
+    <div id="userInfo" style="display:none;font-size:0.9em">
+      <span id="userName" class="small"></span>
+      <button id="logoutBtn" class="btn" style="padding:0.4rem 0.8rem;font-size:0.9em">Logout</button>
+    </div>
+    <button id="loginBtn" class="btn" style="padding:0.4rem 0.8rem;font-size:0.9em">Sign in with Google</button>
+  </div>
 </nav>
 
 <section id="ask" class="active">
@@ -522,8 +529,70 @@ async function deleteSource(id){
 window.viewSource = viewSource;
 window.deleteSource = deleteSource;
 
+// Authentication state
+let currentUser = null;
+
+async function checkAuth(){
+  try{
+    const r=await fetch("/auth/me"); const d=await r.json();
+    const userInfo = $("userInfo");
+    const loginBtn = $("loginBtn");
+    const userName = $("userName");
+    
+    if(d.authenticated && d.user){
+      currentUser = d.user;
+      if(userInfo) userInfo.style.display = "flex";
+      if(loginBtn) loginBtn.style.display = "none";
+      if(userName) userName.textContent = d.user.name || d.user.email || "User";
+    }else{
+      currentUser = null;
+      if(userInfo) userInfo.style.display = "none";
+      if(loginBtn) loginBtn.style.display = "block";
+    }
+  }catch(e){
+    console.error("Auth check failed:", e);
+    currentUser = null;
+    const userInfo = $("userInfo");
+    const loginBtn = $("loginBtn");
+    if(userInfo) userInfo.style.display = "none";
+    if(loginBtn) loginBtn.style.display = "block";
+  }
+}
+
+// Setup login/logout handlers
+function setupAuthHandlers(){
+  const loginBtn = $("loginBtn");
+  if(loginBtn){
+    loginBtn.onclick = () => {
+      window.location.href = "/auth/google";
+    };
+  }
+
+  const logoutBtn = $("logoutBtn");
+  if(logoutBtn){
+    logoutBtn.onclick = async() => {
+      try{
+        await fetch("/auth/logout");
+        currentUser = null;
+        checkAuth();
+      }catch(e){
+        console.error("Logout failed:", e);
+        checkAuth();
+      }
+    };
+  }
+}
+
+// Check for auth error in URL
+if(window.location.search.includes("error=auth_failed")){
+  alert("Authentication failed. Please try again.");
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
+
 // Load stats on page load
 (async()=>{
+  setupAuthHandlers();
+  await checkAuth();
   try{
     const r=await fetch("/api/stats"); const d=await r.json();
     if(countEl) countEl.textContent = d.count || 0;

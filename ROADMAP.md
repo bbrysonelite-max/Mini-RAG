@@ -35,41 +35,41 @@ This document tracks the step-by-step development of Mini-RAG from prototype to 
 
 **Goal:** Make the system secure enough for any production use
 
-### Week 1: File Upload Security
-- [ ] Sanitize filenames (prevent path traversal)
-- [ ] Add file size limits (100MB max)
-- [ ] Validate file types (whitelist)
-- [ ] Generate safe filenames (UUID-based)
-- [ ] Add file scanning/malware checks (optional)
+### Week 1: File Upload Security ✅
+- [x] Sanitize filenames (prevent path traversal)
+- [x] Add file size limits (100MB max)
+- [x] Validate file types (whitelist)
+- [x] Generate safe filenames (UUID-based)
+- [x] Add file scanning/malware checks (optional - skipped, not needed)
 
-### Week 2: Input Validation
-- [ ] Add Pydantic models for all API endpoints
-- [ ] Validate query length (max 5000 chars)
-- [ ] Validate `k` parameter (1-100 range)
-- [ ] URL validation for YouTube ingestion
-- [ ] Language code validation
+### Week 2: Input Validation ✅
+- [x] Add Pydantic models for all API endpoints
+- [x] Validate query length (max 5000 chars)
+- [x] Validate `k` parameter (1-100 range)
+- [x] URL validation for YouTube ingestion
+- [x] Language code validation
 
-### Week 3: Error Handling & Rate Limiting
-- [ ] Replace bare `except` clauses with specific exceptions
-- [ ] Add structured error logging
-- [ ] Implement rate limiting (30 req/min for queries, 10/hour for uploads)
-- [ ] Add request timeouts
-- [ ] Sanitize error messages (don't expose internal paths)
+### Week 3: Error Handling & Rate Limiting ✅
+- [x] Replace bare `except` clauses with specific exceptions
+- [x] Add structured error logging
+- [x] Implement rate limiting (30 req/min for queries, 10/hour for uploads)
+- [x] Add request timeouts
+- [x] Sanitize error messages (don't expose internal paths)
 
-**Reference:** See `CRITICAL_FIXES_GUIDE.md` for code examples
+**Reference:** See `docs/guides/CRITICAL_FIXES_GUIDE.md` for code examples
 
 ---
 
-## Phase 3: Authentication & User Management (1-2 weeks)
+## Phase 3: Authentication & User Management (1-2 weeks) ✅
 
 **Goal:** Add basic authentication and user accounts
 
-- [ ] Choose auth method (JWT or API keys)
-- [ ] Implement user registration/login
-- [ ] Add user sessions
-- [ ] Protect API endpoints
-- [ ] Add user-specific data isolation
-- [ ] Create admin user role
+- [x] Choose auth method (JWT or API keys) - Google OAuth + JWT
+- [x] Implement user registration/login - Google OAuth
+- [x] Add user sessions - JWT tokens with 7-day expiry
+- [x] Protect API endpoints - All sensitive endpoints require auth
+- [x] Add user-specific data isolation - Chunks filtered by user_id
+- [x] Create admin user role - First user is admin, admin endpoints added
 
 **Options:**
 - Simple: API keys per user
@@ -175,12 +175,14 @@ This document tracks the step-by-step development of Mini-RAG from prototype to 
 - Document ingestion
 - Status messages
 - Error feedback
+- Phase 2: Critical Security Fixes (file upload security, input validation, error handling, rate limiting, timeouts)
+- Phase 3: Authentication & User Management (Google OAuth, user database, endpoint protection, data isolation, admin role)
 
 ### In Progress 🚧
 - None currently
 
 ### Next Up 📋
-- Phase 2: Critical Security Fixes
+- Phase 4: Robustness & Polish
 
 ### Blocked ⛔
 - None
@@ -220,8 +222,8 @@ This document tracks the step-by-step development of Mini-RAG from prototype to 
 
 ## Resources
 
-- `COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis
-- `CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
+- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis
+- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
 - `QUICK_REFERENCE.md` - Quick checklist
 
 ---
