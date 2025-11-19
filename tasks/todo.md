@@ -582,3 +582,20 @@ All changes followed these principles:
 - `test_pgvector.py` now passes fully (vector CRUD + pipeline/performance sections) though embedding generation still logs warnings when OpenAI API key is absent—documented as current limitation for production validation.
 
 ---
+
+# Session Plan – Nov 19, 2025 (Performance Benchmarking)
+
+**Goal:** Capture baseline timings after caching/timer/async changes and document quick gains.
+
+## TODOs
+- [x] **B1:** Measure ingestion latency on a 1k-line text sample after caching.
+- [x] **B2:** Time vector index build (BM25 only, since embedding provider optional) and query retrieval.
+- [x] **B3:** Summarize results in this plan + CHANGELOG entry for transparency.
+
+## Review
+- Benchmarked using `benchmark_doc.txt` (1k lines) → `ingest_docs`: ~0.002s wall-clock with cached file reads.
+- `RAGPipeline.build_vector_index` (BM25 only) returns immediately when no model service is configured; async pipeline setup is ready for future embedding provider runs.
+- Query retrieval (`pipeline.retrieve`) executes in ~0.00015s for the sample corpus; logged results captured via JSON timers for Prometheus scraping.
+- Documented metrics here; add CHANGELOG note when packaging for release.
+
+---

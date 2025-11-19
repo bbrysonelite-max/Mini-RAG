@@ -9,8 +9,11 @@ Implements the RAG pipeline as specified:
 """
 
 import logging
+import argparse, json, os, re, hashlib, datetime, shutil
+import uuid
 from typing import List, Dict, Any, Optional, Literal, TypedDict, Tuple
 from retrieval import SimpleIndex, load_chunks
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +138,17 @@ class RAGPipeline:
         if self.use_pgvector:
             self.vector_store_db = vector_store or (VectorStore() if PGVECTOR_AVAILABLE else None)
             self.vector_store_memory: Dict[str, List[float]] = {}  # Fallback
+            self.db_context: Optional[Dict[str, str]] = None
         else:
             self.vector_store_db = None
             self.vector_store_memory: Dict[str, List[float]] = {}  # In-memory storage
+            self.db_context = None
         
         self._load_index()
+        # Map from database chunk UUID -> raw chunk payload
+        self.db_chunk_map: Dict[str, Dict[str, Any]] = {}
+        self._embedding_tasks: List[asyncio.Task] = []
+        self._embedding_semaphore = asyncio.Semaphore(3)
     
     async def build_vector_index(
         self,
@@ -163,48 +172,69 @@ class RAGPipeline:
             return {"error": "No chunks loaded"}
         
         logger.info(f"Building vector index for {len(self.chunks)} chunks (pgvector={self.use_pgvector})...")
-        
+
         embedded_count = 0
         error_count = 0
-        
-        # Process chunks in batches
+
+        if self.use_pgvector and self.vector_store_db:
+            self.db_context = await self.vector_store_db.ensure_default_context()
+
+        async def process_batch(batch_index: int, batch_chunks: List[Dict[str, Any]]):
+            nonlocal embedded_count, error_count
+
+            async with self._embedding_semaphore:
+                batch_texts = [c.get('content', '') for c in batch_chunks]
+                batch_ids = [c.get('id', '') for c in batch_chunks]
+                db_batch_ids = [self._normalize_chunk_id(c_id) for c_id in batch_ids]
+
+                for db_id, chunk_data in zip(db_batch_ids, batch_chunks):
+                    if db_id:
+                        self.db_chunk_map[db_id] = chunk_data
+
+                try:
+                    result = await self.model_service.embed({"texts": batch_texts})
+                    vectors = result.get("vectors", [])
+
+                    if self.use_pgvector and self.vector_store_db:
+                        if self.db_context:
+                            await self.vector_store_db.ensure_chunks(list(zip(db_batch_ids, batch_chunks)), self.db_context)
+                        embeddings_batch = [
+                            (chunk_id, vector, model_id)
+                            for chunk_id, vector in zip(db_batch_ids, vectors)
+                            if chunk_id and vector
+                        ]
+
+                        insert_result = await self.vector_store_db.insert_embeddings_batch(embeddings_batch)
+                        embedded_count += insert_result.get('inserted', 0)
+                        error_count += insert_result.get('errors', 0)
+                    else:
+                        for chunk_id, vector in zip(db_batch_ids, vectors):
+                            if chunk_id and vector:
+                                self.vector_store_memory[chunk_id] = vector
+                                embedded_count += 1
+
+                    logger.info(
+                        "Embedded batch",
+                        extra={"batch": batch_index + 1, "vectors": len(vectors), "storage": "pgvector" if self.use_pgvector else "memory"}
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error embedding batch {batch_index + 1}: {e}")
+                    error_count += len(batch_chunks)
+
+        loop = asyncio.get_event_loop()
+        self._embedding_tasks = []
         for i in range(0, len(self.chunks), batch_size):
-            batch = self.chunks[i:i+batch_size]
-            batch_texts = [c.get('content', '') for c in batch]
-            batch_ids = [c.get('id', '') for c in batch]
-            
-            try:
-                result = await self.model_service.embed({"texts": batch_texts})
-                vectors = result.vectors
-                
-                # Store embeddings (pgvector or memory)
-                if self.use_pgvector and self.vector_store_db:
-                    # Batch insert to pgvector
-                    embeddings_batch = [
-                        (chunk_id, vector, model_id)
-                        for chunk_id, vector in zip(batch_ids, vectors)
-                        if chunk_id and vector
-                    ]
-                    
-                    insert_result = await self.vector_store_db.insert_embeddings_batch(embeddings_batch)
-                    embedded_count += insert_result.get('inserted', 0)
-                    error_count += insert_result.get('errors', 0)
-                else:
-                    # Store in memory
-                    for chunk_id, vector in zip(batch_ids, vectors):
-                        if chunk_id and vector:
-                            self.vector_store_memory[chunk_id] = vector
-                            embedded_count += 1
-                
-                logger.info(f"Embedded batch {i//batch_size + 1}: {len(vectors)} vectors")
-                
-            except Exception as e:
-                logger.error(f"Error embedding batch {i//batch_size + 1}: {e}")
-                error_count += len(batch)
-        
+            batch = self.chunks[i:i + batch_size]
+            task = loop.create_task(process_batch(i // batch_size, batch))
+            self._embedding_tasks.append(task)
+
+        if self._embedding_tasks:
+            await asyncio.gather(*self._embedding_tasks)
+
         storage_type = "pgvector" if self.use_pgvector else "memory"
         logger.info(f"Vector index built ({storage_type}): {embedded_count} chunks embedded, {error_count} errors")
-        
+
         return {
             "chunks_embedded": embedded_count,
             "errors": error_count,
@@ -359,8 +389,8 @@ class RAGPipeline:
             # Generate embedding for query
             embed_result = await self.model_service.embed({"texts": [query]})
 
-            # ConcreteModelService.embed returns an object with a .vectors list
-            vectors = embed_result.vectors
+            # ConcreteModelService.embed returns a TypedDict with "vectors"
+            vectors = embed_result.get("vectors", [])
             if not vectors:
                 logger.warning("Failed to generate query embedding")
                 return []
@@ -369,7 +399,8 @@ class RAGPipeline:
             
             # Route to pgvector or in-memory search
             if self.use_pgvector and self.vector_store_db:
-                return await self._retrieve_vector_pgvector(query_vector, k, project_id, filters)
+                db_project_id = (self.db_context or {}).get("project_id", project_id)
+                return await self._retrieve_vector_pgvector(query_vector, k, db_project_id, filters)
             else:
                 return await self._retrieve_vector_memory(query_vector, k)
             
@@ -397,20 +428,24 @@ class RAGPipeline:
             # Convert to ChunkWithScore format
             candidates = []
             for result in results:
-                chunk = Chunk(
-                    id=str(result['id']),
-                    documentId='',
-                    projectId=project_id,
-                    text=result['text'],
-                    position=result.get('position', 0),
-                    startOffset=result.get('start_offset'),
-                    endOffset=result.get('end_offset'),
-                    tags=result.get('tags', []),
-                    ttlExpiresAt=None,
-                    indexVersion=1,
-                    createdAt=result.get('created_at')
-                )
-                
+                db_chunk_id = str(result['id'])
+                raw_chunk = self.db_chunk_map.get(db_chunk_id)
+                if not raw_chunk:
+                    # Fallback: try to locate by comparing normalized ids
+                    raw_chunk = next(
+                        (c for c in self.chunks if self._normalize_chunk_id(c.get('id', '')) == db_chunk_id),
+                        None
+                    )
+                if not raw_chunk:
+                    continue
+                chunk = self._convert_to_chunk(raw_chunk)
+                tags = chunk.get('tags', [])
+                if self.db_context and self.db_context.get('project_id'):
+                    project_tag = f"project:{self.db_context['project_id']}"
+                    if project_tag not in tags:
+                        tags.append(project_tag)
+                chunk['tags'] = tags
+ 
                 candidates.append(ChunkWithScore(
                     chunk=chunk,
                     score=float(result['similarity']),
@@ -442,11 +477,11 @@ class RAGPipeline:
             
             # Build result list
             candidates = []
-            chunk_id_map = {c.get('id'): c for c in self.chunks}
+            chunk_id_map = {self._normalize_chunk_id(c.get('id', '')): c for c in self.chunks}
             
             for chunk_id, score in top_similarities:
-                if chunk_id in chunk_id_map:
-                    chunk_data = chunk_id_map[chunk_id]
+                chunk_data = chunk_id_map.get(chunk_id) or self.db_chunk_map.get(chunk_id)
+                if chunk_data:
                     candidates.append(ChunkWithScore(
                         chunk=self._convert_to_chunk(chunk_data),
                         score=float(score),
@@ -530,6 +565,15 @@ class RAGPipeline:
             indexVersion=1,
             createdAt=metadata.get('created_at')
         )
+
+    def _normalize_chunk_id(self, chunk_id: str) -> str:
+        """Convert chunk identifiers to UUID strings for database storage."""
+        if not chunk_id:
+            return ""
+        try:
+            return str(uuid.UUID(chunk_id))
+        except (ValueError, TypeError):
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
     
     def _apply_filters(
         self,

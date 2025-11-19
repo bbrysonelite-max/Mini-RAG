@@ -1,4 +1,5 @@
 import argparse, json, os, re, hashlib, datetime, shutil
+from functools import lru_cache
 from typing import List, Dict, Any, Tuple
 
 from chunk_backup import ChunkBackupError, create_chunk_backup, restore_chunk_backup
@@ -186,6 +187,7 @@ def read_docx(path: str) -> str:
     import docx2txt
     return docx2txt.process(path) or ""
 
+@lru_cache(maxsize=128)
 def read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
@@ -225,6 +227,7 @@ def _extract_video_id(url: str):
     m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{6,})", url)
     return m.group(1) if m else None
 
+@lru_cache(maxsize=128)
 def fetch_youtube_transcript(video_id: str, lang="en"):
     try:
         from youtube_transcript_api import YouTubeTranscriptApi

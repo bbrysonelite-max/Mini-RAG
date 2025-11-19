@@ -8,10 +8,19 @@ Handles:
 """
 
 import logging
+import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from database import Database, get_database
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_USER_EMAIL = "vectorbot@system.local"
+DEFAULT_ORG_SLUG = "vector-default-org"
+DEFAULT_WORKSPACE_SLUG = "vector-default-workspace"
+DEFAULT_PROJECT_NAMESPACE = "vector-default-project"
+DEFAULT_SOURCE_URI = "vector://default-source"
+DEFAULT_DOCUMENT_TITLE = "Vector Default Document"
 
 
 class VectorStore:
@@ -29,7 +38,186 @@ class VectorStore:
             db: Database instance (uses global if not provided)
         """
         self.db = db or get_database()
-    
+        self._default_context: Optional[Dict[str, str]] = None
+
+    async def ensure_default_context(self) -> Dict[str, str]:
+        """Ensure default org/workspace/project/document records exist for vector storage."""
+        if self._default_context:
+            return self._default_context
+
+        # Ensure service user
+        user = await self.db.fetch_one(
+            """
+            SELECT id FROM users WHERE email = $1
+            """,
+            (DEFAULT_USER_EMAIL,)
+        )
+        if not user:
+            user = await self.db.fetch_one(
+                """
+                INSERT INTO users (email, name, role)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                (DEFAULT_USER_EMAIL, "Vector Bot", "admin")
+            )
+        user_id = user["id"]
+
+        # Organization
+        org = await self.db.fetch_one(
+            """
+            INSERT INTO organizations (name, slug, plan)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
+            ("Vector Default Org", DEFAULT_ORG_SLUG, "free")
+        )
+        org_id = org["id"]
+
+        await self.db.execute(
+            """
+            INSERT INTO user_organizations (user_id, organization_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, organization_id) DO UPDATE SET role = EXCLUDED.role
+            """,
+            (user_id, org_id, "owner")
+        )
+
+        # Workspace
+        workspace = await self.db.fetch_one(
+            """
+            INSERT INTO workspaces (organization_id, name, slug, description, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (organization_id, slug) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
+            (
+                org_id,
+                "Vector Workspace",
+                DEFAULT_WORKSPACE_SLUG,
+                "Auto-generated workspace for vector operations",
+                '{"system": true}'
+            )
+        )
+        workspace_id = workspace["id"]
+
+        await self.db.execute(
+            """
+            INSERT INTO workspace_members (workspace_id, user_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = EXCLUDED.role
+            """,
+            (workspace_id, user_id, "owner")
+        )
+
+        # Project
+        project = await self.db.fetch_one(
+            """
+            INSERT INTO projects (organization_id, workspace_id, owner_id, name, description, namespace, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (namespace) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
+            (
+                org_id,
+                workspace_id,
+                user_id,
+                "Vector Project",
+                "Auto-generated project for vector operations",
+                DEFAULT_PROJECT_NAMESPACE,
+                "ready"
+            )
+        )
+        project_id = project["id"]
+
+        # Source
+        source = await self.db.fetch_one(
+            """
+            SELECT id FROM sources WHERE project_id = $1 AND uri = $2
+            """,
+            (project_id, DEFAULT_SOURCE_URI)
+        )
+        if not source:
+            source = await self.db.fetch_one(
+                """
+                INSERT INTO sources (project_id, workspace_id, type, uri, status, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+                """,
+                (project_id, workspace_id, "document", DEFAULT_SOURCE_URI, "ready", "{}")
+            )
+        source_id = source["id"]
+
+        # Document
+        document = await self.db.fetch_one(
+            """
+            SELECT id FROM documents WHERE source_id = $1 LIMIT 1
+            """,
+            (source_id,)
+        )
+        if not document:
+            document = await self.db.fetch_one(
+                """
+                INSERT INTO documents (source_id, workspace_id, title, language, metadata)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id
+                """,
+                (source_id, workspace_id, DEFAULT_DOCUMENT_TITLE, "en", "{}")
+            )
+        document_id = document["id"]
+
+        self._default_context = {
+            "user_id": str(user_id),
+            "organization_id": str(org_id),
+            "workspace_id": str(workspace_id),
+            "project_id": str(project_id),
+            "source_id": str(source_id),
+            "document_id": str(document_id),
+        }
+        return self._default_context
+
+    async def ensure_chunks(
+        self,
+        chunk_entries: List[Tuple[str, Dict[str, Any]]],
+        context: Dict[str, str]
+    ) -> None:
+        """Ensure chunk records exist for the supplied ids."""
+        if not chunk_entries:
+            return
+
+        for chunk_id, chunk in chunk_entries:
+            metadata = chunk.get("metadata", {}) or {}
+            position = metadata.get("chunk_index", 0)
+            start_offset = metadata.get("start_sec")
+            end_offset = metadata.get("end_sec")
+            text = chunk.get("content", "")
+
+            try:
+                await self.db.execute(
+                    """
+                    INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position, start_offset, end_offset)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT (id) DO UPDATE
+                    SET text = EXCLUDED.text,
+                        position = EXCLUDED.position
+                    """,
+                    (
+                        chunk_id,
+                        context["organization_id"],
+                        context["workspace_id"],
+                        context["document_id"],
+                        context["project_id"],
+                        text,
+                        position,
+                        start_offset,
+                        end_offset,
+                    ),
+                )
+            except Exception as exc:
+                logger.error(f"Failed to ensure chunk {chunk_id}: {exc}")
+                continue
+
     async def insert_embedding(
         self,
         chunk_id: str,

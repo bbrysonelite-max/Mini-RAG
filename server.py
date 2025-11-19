@@ -1,5 +1,5 @@
 
-import os, json, subprocess, hashlib, re, logging
+import os, json, subprocess, hashlib, re, logging, asyncio
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 from fastapi import FastAPI, APIRouter, Form, UploadFile, File, HTTPException, Request
@@ -18,6 +18,10 @@ from raglite import ingest_youtube, ingest_transcript, ingest_docs
 
 from chunk_backup import ChunkBackupError, create_chunk_backup
 
+from logging_utils import configure_logging
+from prometheus_fastapi_instrumentator import Instrumentator
+import httpx
+
 # Import database (optional - server works without it)
 try:
     from database import Database, init_database
@@ -33,6 +37,10 @@ except ImportError as e:
     get_user_service = None
 
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
+INDEX = None
+CHUNKS = []
+_chunk_count_cache: Optional[int] = None
+_chunk_count_stamp: Optional[float] = None
 API_DESCRIPTION = (
     "RAG Talking Agent backend.\n\n"
     "Versioned REST endpoints are available under `/api/v1`. "
@@ -46,6 +54,14 @@ app = FastAPI(
 )
 api_v1 = APIRouter(prefix="/api/v1", tags=["v1"])
 
+# Metrics instrumentation
+instrumentator = Instrumentator()
+instrumentator.instrument(app).expose(
+    app,
+    endpoint="/metrics",
+    include_in_schema=False,
+)
+
 # Session middleware (required for OAuth)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "change-this-secret-key-in-production"))
 
@@ -54,44 +70,49 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
+class RequestTimer:
+    """Context manager to measure request latency."""
+
+    def __init__(self, operation: str, extra: Optional[Dict[str, Any]] = None):
+        self.operation = operation
+        self.extra = extra or {}
+        self.start = None
+
+    def __enter__(self):
+        self.start = asyncio.get_event_loop().time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.start is None:
+            return
+        duration = asyncio.get_event_loop().time() - self.start
+        payload = {"operation": self.operation, "duration_ms": round(duration * 1000, 3)}
+        payload.update(self.extra)
+        logger.info("request_duration", extra=payload)
+
+
 app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
 
 # Setup logging
-def setup_logging():
-    """Configure application logging with rotation."""
-    log_dir = os.path.join(os.path.dirname(__file__), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Create logger
-    log = logging.getLogger("rag")
-    log.setLevel(logging.INFO)
-    
-    # File handler with rotation
-    from logging.handlers import RotatingFileHandler
-    file_handler = RotatingFileHandler(
-        os.path.join(log_dir, "rag.log"),
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5
-    )
-    file_handler.setLevel(logging.INFO)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.WARNING)
-    
-    # Formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    log.addHandler(file_handler)
-    log.addHandler(console_handler)
-    
-    return log
+logger = configure_logging()
 
-logger = setup_logging()
+HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
+HEALTHCHECKS_PING_FAIL_URL = os.getenv("HEALTHCHECKS_PING_FAIL_URL")
+
+
+async def _ping_healthchecks(success: bool, payload: Dict[str, Any]) -> None:
+    """Send uptime pings to Healthchecks or similar services when configured."""
+    if not HEALTHCHECKS_PING_URL:
+        return
+
+    url = HEALTHCHECKS_PING_URL if success else (HEALTHCHECKS_PING_FAIL_URL or f"{HEALTHCHECKS_PING_URL}/fail")
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(url, json=payload)
+    except Exception as exc:
+        logger.warning("Failed to ping health monitor: %s", exc)
 
 async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> Optional[str]:
     """Resolve the user's default workspace ID, if multi-tenant support is enabled."""
@@ -207,8 +228,6 @@ def generate_safe_filename(original_filename: str) -> str:
     name_hash = hashlib.md5(sanitized.encode()).hexdigest()[:8]
     return f"{name_hash}_{sanitized}"
 
-INDEX=None; CHUNKS=[]
-
 # Database and user service globals
 DB: Optional[Database] = None
 USER_SERVICE: Optional[UserService] = None
@@ -242,11 +261,26 @@ async def shutdown_event():
         logger.info("Shutting down database connection")
 
 def _count_lines(path):
+    global _chunk_count_cache, _chunk_count_stamp
     try:
-        with open(path,"r",encoding="utf-8") as f:
-            return sum(1 for _ in f)
-    except FileNotFoundError:
+        modified = os.path.getmtime(path)
+    except OSError:
+        _chunk_count_cache = 0
+        _chunk_count_stamp = None
         return 0
+
+    if _chunk_count_cache is not None and _chunk_count_stamp == modified:
+        return _chunk_count_cache
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            count = sum(1 for _ in f)
+    except FileNotFoundError:
+        count = 0
+
+    _chunk_count_cache = count
+    _chunk_count_stamp = modified
+    return count
 
 def is_admin(user: Optional[Dict[str, Any]]) -> bool:
     """Check if user has admin role."""
@@ -282,6 +316,7 @@ def ensure_index():
             raise IndexNotFoundError("Index is empty. Please ingest documents first.")
         try:
             INDEX = SimpleIndex(CHUNKS)
+            logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
         except Exception as e:
             logger.error(f"Failed to build index: {e}", exc_info=True)
             raise IndexNotFoundError("Failed to build search index.")
@@ -311,19 +346,23 @@ async def health_check():
                 logger.error(f"Database health check failed: {e}")
                 db_status = "unhealthy"
         
-        return {
+        response = {
             "status": "healthy",
             "database": db_status,
             "index": index_status,
             "chunks_count": chunks_count,
             "auth_available": AUTH_AVAILABLE
         }
+        asyncio.create_task(_ping_healthchecks(True, response))
+        return response
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
-        return {
+        failure_payload = {
             "status": "unhealthy",
             "error": str(e)
         }
+        asyncio.create_task(_ping_healthchecks(False, failure_payload))
+        return failure_payload
 
 # OAuth Routes
 @app.get("/auth/google")
@@ -488,10 +527,11 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     # Add timeout for query processing
     import asyncio
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user, workspace_id),
-            timeout=30.0  # 30 second timeout
-        )
+        with RequestTimer("ask", {"user_id": user.get('user_id'), "workspace_id": workspace_id}):
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user, workspace_id),
+                timeout=30.0  # 30 second timeout
+            )
         return result
     except asyncio.TimeoutError:
         raise HTTPException(
@@ -588,13 +628,14 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
             results.append({"url": url, "error": "Invalid YouTube URL format", "written": 0})
             continue
         try:
-            r = ingest_youtube(
-                url,
-                out_jsonl=CHUNKS_PATH,
-                language=url_req.language,
-                user_id=user_id,
-                workspace_id=workspace_id
-            )
+            with RequestTimer("ingest_youtube", {"url": url, "user_id": user_id, "workspace_id": workspace_id}):
+                r = ingest_youtube(
+                    url,
+                    out_jsonl=CHUNKS_PATH,
+                    language=url_req.language,
+                    user_id=user_id,
+                    workspace_id=workspace_id
+                )
             written = r.get("written", 0)
             if written == 0 and r.get("stderr"):
                 error_msg = r.get("stderr", "Unknown error")
@@ -643,18 +684,23 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 logger.warning(f"yt-dlp download failed for {url}: {e}")
                 vtt = ""
             if vtt:
-                r = ingest_transcript(
-                    vtt,
-                    out_jsonl=CHUNKS_PATH,
-                    language=url_req.language,
-                    user_id=user_id,
-                    workspace_id=workspace_id
-                )
+                with RequestTimer("ingest_transcript_retry", {"file": vtt, "user_id": user_id, "workspace_id": workspace_id}):
+                    r = ingest_transcript(
+                        vtt,
+                        out_jsonl=CHUNKS_PATH,
+                        language=url_req.language,
+                        user_id=user_id,
+                        workspace_id=workspace_id
+                    )
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
                 total += r.get("written",0)
             else:
                 error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
                 results.append({"url": url, "error": error_msg, "written": 0})
+    global _chunk_count_cache, _chunk_count_stamp
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
+
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 api_v1.post("/ingest/urls")(ingest_urls)
 
@@ -730,30 +776,35 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         # Process file
         lower = safe_name.lower()
         try:
-            if lower.endswith((".vtt", ".srt", ".txt")):
-                r = ingest_transcript(
-                    str(path),
-                    out_jsonl=CHUNKS_PATH,
-                    language=language,
-                    user_id=user_id,
-                    workspace_id=workspace_id
-                )
-            elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
-                r = ingest_docs(
-                    str(path),
-                    out_jsonl=CHUNKS_PATH,
-                    language=language,
-                    user_id=user_id,
-                    workspace_id=workspace_id
-                )
-            else:
-                r = {"error": "unsupported file type"}
+            with RequestTimer("ingest_file", {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id}):
+                if lower.endswith((".vtt", ".srt", ".txt")):
+                    r = ingest_transcript(
+                        str(path),
+                        out_jsonl=CHUNKS_PATH,
+                        language=language,
+                        user_id=user_id,
+                        workspace_id=workspace_id
+                    )
+                elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
+                    r = ingest_docs(
+                        str(path),
+                        out_jsonl=CHUNKS_PATH,
+                        language=language,
+                        user_id=user_id,
+                        workspace_id=workspace_id
+                    )
+                else:
+                    r = {"error": "unsupported file type"}
         except Exception as e:
             r = {"error": str(e)}
         
         results.append({"file": f.filename, "safe_name": safe_name, **r})
         total += int(r.get("written", 0) or 0)
     
+    global _chunk_count_cache, _chunk_count_stamp
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
+
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 api_v1.post("/ingest/files")(ingest_files)
 
@@ -850,6 +901,9 @@ async def delete_source(request: Request, source_id: str):
     result = delete_source_chunks(CHUNKS_PATH, source_id, workspace_id=workspace_id)
     INDEX = None
     CHUNKS = []
+    global _chunk_count_cache, _chunk_count_stamp
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
     return result
 api_v1.delete("/sources/{source_id}")(delete_source)
 
