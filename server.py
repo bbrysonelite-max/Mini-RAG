@@ -93,6 +93,20 @@ def setup_logging():
 
 logger = setup_logging()
 
+async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve the user's default workspace ID, if multi-tenant support is enabled."""
+    if not user or not USER_SERVICE:
+        return None
+    user_id = user.get("user_id")
+    if not user_id:
+        return None
+    try:
+        workspace = await USER_SERVICE.get_primary_workspace(user_id)
+        return workspace.get("id") if workspace else None
+    except Exception as exc:
+        logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
+        return None
+
 # Custom exceptions
 class RAGError(Exception):
     """Base exception for RAG system."""
@@ -560,15 +574,10 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
     results = []
     total = 0
     
-    # Get user_id from authenticated user
+    # Resolve workspace context
     user_id = user.get('user_id') if user else None
-    workspace_id = None
-    if USER_SERVICE and user_id:
-        try:
-            primary_workspace = await USER_SERVICE.get_primary_workspace(user_id)
-            workspace_id = primary_workspace.get("id") if primary_workspace else None
-        except Exception as exc:
-            logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    workspace_id = await _get_primary_workspace_id_for_user(user)
     
     for url in urls_list:
         # Validate YouTube URL format
@@ -799,29 +808,31 @@ def dedupe(request: Request):
 api_v1.post("/dedupe")(dedupe)
 
 @app.get("/api/sources")
-def get_sources(request: Request):
+async def get_sources(request: Request):
     """List all unique sources with metadata (filtered by user)."""
     ensure_index()
     # Get current user for filtering
     user = get_current_user(request)
     user_id = user.get('user_id') if user else None
-    sources = get_unique_sources(CHUNKS, user_id=user_id)
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    sources = get_unique_sources(CHUNKS, user_id=user_id, workspace_id=workspace_id)
     return {"sources": sources, "count": len(sources)}
 api_v1.get("/sources")(get_sources)
 
 @app.get("/api/sources/{source_id}/chunks")
-def get_source_chunks(request: Request, source_id: str):
+async def get_source_chunks(request: Request, source_id: str):
     """Get all chunks for a specific source (filtered by user)."""
     ensure_index()
     # Get current user for filtering
     user = get_current_user(request)
     user_id = user.get('user_id') if user else None
-    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
     return {"chunks": chunks, "count": len(chunks)}
 api_v1.get("/sources/{source_id}/chunks")(get_source_chunks)
 
 @app.delete("/api/sources/{source_id}")
-def delete_source(request: Request, source_id: str):
+async def delete_source(request: Request, source_id: str):
     """Delete a source and all its chunks."""
     # Require authentication
     user = get_current_user(request)
@@ -832,42 +843,44 @@ def delete_source(request: Request, source_id: str):
         )
     
     global INDEX, CHUNKS
-    # TODO: Verify user owns this source when data isolation is implemented
-    result = delete_source_chunks(CHUNKS_PATH, source_id)
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    result = delete_source_chunks(CHUNKS_PATH, source_id, workspace_id=workspace_id)
     INDEX = None
     CHUNKS = []
     return result
 api_v1.delete("/sources/{source_id}")(delete_source)
 
 @app.get("/api/sources/{source_id}/preview")
-def get_source_preview(request: Request, source_id: str, limit: int = 3):
+async def get_source_preview(request: Request, source_id: str, limit: int = 3):
     """Get preview of a source (first few chunks, filtered by user)."""
     ensure_index()
     # Get current user for filtering
     user = get_current_user(request)
     user_id = user.get('user_id') if user else None
-    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
     preview = chunks[:limit]
     return {"preview": preview, "total_chunks": len(chunks)}
 api_v1.get("/sources/{source_id}/preview")(get_source_preview)
 
 @app.get("/api/search")
-def search_source(request: Request, query: str, source_id: str = None, k: int = 8):
+async def search_source(request: Request, query: str, source_id: str = None, k: int = 8):
     """Search within all chunks or a specific source (filtered by user)."""
     ensure_index()
     # Get current user for filtering
     user = get_current_user(request)
     user_id = user.get('user_id') if user else None
+    workspace_id = await _get_primary_workspace_id_for_user(user)
     
     if source_id:
-        source_chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id)
+        source_chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
         if not source_chunks:
             return {"chunks": [], "scores": []}
         temp_index = SimpleIndex(source_chunks)
-        ranked = temp_index.search(query, k=k)
+        ranked = temp_index.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
         results = [(source_chunks[i], score) for i, score in ranked]
     else:
-        ranked = INDEX.search(query, k=k, user_id=user_id)
+        ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
         results = [(CHUNKS[i], score) for i, score in ranked]
     
     chunks_with_scores = []

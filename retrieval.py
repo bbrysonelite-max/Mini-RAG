@@ -21,27 +21,33 @@ class SimpleIndex:
         docs=[c.get("content","") for c in chunks]
         toks=[_tok(d) for d in docs]
         self.bm25=BM25Okapi(toks)
-    def search(self,query,k=8,user_id=None):
+    def search(self,query,k=8,user_id=None,workspace_id=None):
         q=_tok(query or "")
         scores=self.bm25.get_scores(q)
         ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
         
-        # Filter by user_id if provided
-        if user_id:
-            filtered = []
-            for idx, score in ranked:
-                chunk = self.chunks[idx]
+        if not user_id and not workspace_id:
+            return ranked[:k]
+
+        filtered = []
+        for idx, score in ranked:
+            chunk = self.chunks[idx]
+
+            if workspace_id:
+                chunk_workspace = chunk.get("workspace_id")
+                # Allow legacy chunks that don't specify workspace
+                if chunk_workspace is not None and chunk_workspace != workspace_id:
+                    continue
+
+            if user_id:
                 chunk_user_id = chunk.get("user_id")
-                # Include chunk if:
-                # 1. It belongs to the user
-                # 2. It has no user_id (legacy/public content)
-                if chunk_user_id is None or chunk_user_id == user_id:
-                    filtered.append((idx, score))
-                    if len(filtered) >= k:
-                        break
-            return filtered
-        
-        return ranked[:k]
+                if chunk_user_id is not None and chunk_user_id != user_id:
+                    continue
+
+            filtered.append((idx, score))
+            if len(filtered) >= k:
+                break
+        return filtered
 def format_citation(chunk):
     src=chunk.get("source",{}); meta=chunk.get("metadata",{})
     if src.get("type")=="youtube":
@@ -59,7 +65,7 @@ def _source_id(source: Dict[str, Any]) -> str:
     h.update(f"{src_type}:{path_or_url}".encode("utf-8"))
     return h.hexdigest()[:32]
 
-def get_unique_sources(chunks: List[Dict[str, Any]], user_id: str = None) -> List[Dict[str, Any]]:
+def get_unique_sources(chunks: List[Dict[str, Any]], user_id: str = None, workspace_id: str = None) -> List[Dict[str, Any]]:
     """Extract unique sources with metadata from chunks, optionally filtered by user_id."""
     sources_map = {}
     for chunk in chunks:
@@ -68,6 +74,10 @@ def get_unique_sources(chunks: List[Dict[str, Any]], user_id: str = None) -> Lis
             chunk_user_id = chunk.get("user_id")
             # Only include if chunk belongs to user or has no user_id (legacy/public)
             if chunk_user_id is not None and chunk_user_id != user_id:
+                continue
+        if workspace_id:
+            chunk_workspace_id = chunk.get("workspace_id")
+            if chunk_workspace_id is not None and chunk_workspace_id != workspace_id:
                 continue
         
         src = chunk.get("source", {})
@@ -89,7 +99,7 @@ def get_unique_sources(chunks: List[Dict[str, Any]], user_id: str = None) -> Lis
         sources_map[sid]["chunk_count"] += 1
     return list(sources_map.values())
 
-def get_chunks_by_source(chunks: List[Dict[str, Any]], source_id: str, user_id: str = None) -> List[Dict[str, Any]]:
+def get_chunks_by_source(chunks: List[Dict[str, Any]], source_id: str, user_id: str = None, workspace_id: str = None) -> List[Dict[str, Any]]:
     """Get all chunks for a specific source, optionally filtered by user_id."""
     result = []
     for c in chunks:
@@ -100,14 +110,31 @@ def get_chunks_by_source(chunks: List[Dict[str, Any]], source_id: str, user_id: 
                 # Only include if chunk belongs to user or has no user_id
                 if chunk_user_id is not None and chunk_user_id != user_id:
                     continue
+            if workspace_id:
+                chunk_workspace_id = c.get("workspace_id")
+                if chunk_workspace_id is not None and chunk_workspace_id != workspace_id:
+                    continue
             result.append(c)
     return result
 
-def delete_source_chunks(path: str, source_id: str) -> Dict[str, Any]:
+def delete_source_chunks(path: str, source_id: str, workspace_id: str = None) -> Dict[str, Any]:
     """Delete all chunks for a source from the chunks file."""
     chunks = load_chunks(path)
-    to_keep = [c for c in chunks if _source_id(c.get("source", {})) != source_id]
-    deleted_count = len(chunks) - len(to_keep)
+    to_keep = []
+    deleted_count = 0
+    for chunk in chunks:
+        if _source_id(chunk.get("source", {})) != source_id:
+            to_keep.append(chunk)
+            continue
+
+        if workspace_id:
+            chunk_workspace_id = chunk.get("workspace_id")
+            if chunk_workspace_id is not None and chunk_workspace_id != workspace_id:
+                to_keep.append(chunk)
+                continue
+
+        deleted_count += 1
+        continue
 
     if deleted_count == 0:
         return {"deleted": 0, "kept": len(to_keep), "backup_path": None}
