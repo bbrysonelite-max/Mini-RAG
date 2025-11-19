@@ -541,7 +541,7 @@ def validate_youtube_url(url: str) -> bool:
 @app.post("/api/ingest_urls")
 @app.post("/ingest/urls")
 @limiter.limit("10/hour")
-def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("en")):
+async def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("en")):
     # Require authentication
     user = get_current_user(request)
     if not user:
@@ -562,6 +562,13 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
     
     # Get user_id from authenticated user
     user_id = user.get('user_id') if user else None
+    workspace_id = None
+    if USER_SERVICE and user_id:
+        try:
+            primary_workspace = await USER_SERVICE.get_primary_workspace(user_id)
+            workspace_id = primary_workspace.get("id") if primary_workspace else None
+        except Exception as exc:
+            logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
     
     for url in urls_list:
         # Validate YouTube URL format
@@ -569,7 +576,13 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
             results.append({"url": url, "error": "Invalid YouTube URL format", "written": 0})
             continue
         try:
-            r = ingest_youtube(url, out_jsonl=CHUNKS_PATH, language=url_req.language, user_id=user_id)
+            r = ingest_youtube(
+                url,
+                out_jsonl=CHUNKS_PATH,
+                language=url_req.language,
+                user_id=user_id,
+                workspace_id=workspace_id
+            )
             written = r.get("written", 0)
             if written == 0 and r.get("stderr"):
                 error_msg = r.get("stderr", "Unknown error")
@@ -618,7 +631,13 @@ def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("e
                 logger.warning(f"yt-dlp download failed for {url}: {e}")
                 vtt = ""
             if vtt:
-                r = ingest_transcript(vtt, out_jsonl=CHUNKS_PATH, language=url_req.language, user_id=user_id)
+                r = ingest_transcript(
+                    vtt,
+                    out_jsonl=CHUNKS_PATH,
+                    language=url_req.language,
+                    user_id=user_id,
+                    workspace_id=workspace_id
+                )
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
                 total += r.get("written",0)
             else:
@@ -643,6 +662,15 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
     results = []
     total = 0
     
+    workspace_id = None
+    user_id = user.get('user_id') if user else None
+    if USER_SERVICE and user_id:
+        try:
+            primary_workspace = await USER_SERVICE.get_primary_workspace(user_id)
+            workspace_id = primary_workspace.get("id") if primary_workspace else None
+        except Exception as exc:
+            logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
+
     for f in files:
         # Validate file type
         if not validate_file_type(f.filename):
@@ -690,13 +718,22 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         # Process file
         lower = safe_name.lower()
         try:
-            # Get user_id from authenticated user
-            user_id = user.get('user_id') if user else None
-            
             if lower.endswith((".vtt", ".srt", ".txt")):
-                r = ingest_transcript(str(path), out_jsonl=CHUNKS_PATH, language=language, user_id=user_id)
+                r = ingest_transcript(
+                    str(path),
+                    out_jsonl=CHUNKS_PATH,
+                    language=language,
+                    user_id=user_id,
+                    workspace_id=workspace_id
+                )
             elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
-                r = ingest_docs(str(path), out_jsonl=CHUNKS_PATH, language=language, user_id=user_id)
+                r = ingest_docs(
+                    str(path),
+                    out_jsonl=CHUNKS_PATH,
+                    language=language,
+                    user_id=user_id,
+                    workspace_id=workspace_id
+                )
             else:
                 r = {"error": "unsupported file type"}
         except Exception as e:

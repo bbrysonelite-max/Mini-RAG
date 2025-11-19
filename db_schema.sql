@@ -14,14 +14,60 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Projects (Brains) table
+-- Organizations (tenants)
+CREATE TABLE IF NOT EXISTS organizations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    plan VARCHAR(50) NOT NULL DEFAULT 'free', -- free, pro, enterprise
+    quotas JSONB DEFAULT '{"users": 5, "workspaces": 3, "chunks": 50000}',
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- User <-> Organization membership
+CREATE TABLE IF NOT EXISTS user_organizations (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL DEFAULT 'member', -- owner, admin, member, billing
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (user_id, organization_id)
+);
+
+-- Workspaces (per-organization)
+CREATE TABLE IF NOT EXISTS workspaces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL,
+    description TEXT,
+    metadata JSONB DEFAULT '{}',
+    quota JSONB DEFAULT '{"chunks": 20000, "sources": 2000}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (organization_id, slug)
+);
+
+-- Workspace membership
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL DEFAULT 'editor', -- owner, admin, editor, viewer
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (workspace_id, user_id)
+);
+
+-- Projects (workspaces default project records)
 CREATE TABLE IF NOT EXISTS projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    namespace VARCHAR(255) NOT NULL UNIQUE, -- e.g., bbryson/ai-brain/prod
-    status VARCHAR(50) NOT NULL DEFAULT 'not_ready', -- not_ready, ingesting, ready, needs_refresh
+    namespace VARCHAR(255) NOT NULL UNIQUE,
+    status VARCHAR(50) NOT NULL DEFAULT 'not_ready',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -40,10 +86,11 @@ CREATE TABLE IF NOT EXISTS index_versions (
 CREATE TABLE IF NOT EXISTS sources (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    type VARCHAR(50) NOT NULL, -- youtube, file, url
-    uri TEXT NOT NULL, -- URL, path, etc.
-    status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending, ingesting, ingested, failed
-    hash VARCHAR(64), -- content hash for dedupe / change detection
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL,
+    uri TEXT NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    hash VARCHAR(64),
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -54,6 +101,7 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     title VARCHAR(500),
     version INTEGER NOT NULL DEFAULT 1,
     language VARCHAR(10) DEFAULT 'en',
@@ -64,6 +112,8 @@ CREATE TABLE IF NOT EXISTS documents (
 -- Chunks table (core retrieval unit)
 CREATE TABLE IF NOT EXISTS chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     text TEXT NOT NULL,
@@ -73,6 +123,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     tags TEXT[] DEFAULT '{}', -- Array of tags: project:slug, source_type:youtube, etc.
     ttl_expires_at TIMESTAMP WITH TIME ZONE,
     index_version INTEGER NOT NULL DEFAULT 1,
+
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     
     -- Full-text search
@@ -139,21 +190,41 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 
 -- Indexes for performance
 
+-- Organizations
+CREATE INDEX IF NOT EXISTS idx_organizations_slug ON organizations(slug);
+CREATE INDEX IF NOT EXISTS idx_organizations_plan ON organizations(plan);
+
+-- User organizations
+CREATE INDEX IF NOT EXISTS idx_user_org_user ON user_organizations(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_org_org ON user_organizations(organization_id);
+
+-- Workspaces
+CREATE INDEX IF NOT EXISTS idx_workspaces_org_id ON workspaces(organization_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_slug ON workspaces(slug);
+
+-- Workspace members
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members(user_id);
+
 -- Projects
 CREATE INDEX IF NOT EXISTS idx_projects_owner_id ON projects(owner_id);
+CREATE INDEX IF NOT EXISTS idx_projects_workspace_id ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_projects_namespace ON projects(namespace);
 
 -- Sources
 CREATE INDEX IF NOT EXISTS idx_sources_project_id ON sources(project_id);
+CREATE INDEX IF NOT EXISTS idx_sources_workspace_id ON sources(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(status);
 CREATE INDEX IF NOT EXISTS idx_sources_hash ON sources(hash);
 
 -- Documents
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
+CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id);
 
 -- Chunks
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_project_id ON chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_organization_id ON chunks(organization_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_workspace_id ON chunks(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_tags ON chunks USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_chunks_text_search ON chunks USING GIN(text_search_vector);
 

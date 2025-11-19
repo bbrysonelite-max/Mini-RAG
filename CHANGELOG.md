@@ -18,5 +18,7 @@
 - Made `raglite.write_jsonl` transactional via copy-on-write staging and expanded tests/docs to reflect the atomic swap behavior.
 - Moved planning documents from `project/` to `docs/project/` to tidy the repository root.
 - Added versioned REST router at `/api/v1` (legacy `/api/*` routes remain available during transition) and refreshed API metadata.
+- Extended `db_schema.sql` with `organizations`, `user_organizations`, `workspaces`, and `workspace_members` tables to support multi-tenant planning.
+- User service now provisions default org/workspace memberships; ingestion attaches `workspace_id` to chunk records for future isolation.
 
 

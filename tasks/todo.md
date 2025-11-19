@@ -437,6 +437,8 @@ All changes followed these principles:
 - Phase 4 robustness + cleanup complete and committed (`feat: add chunk backup recovery and tidy docs`).
 - Phase 5 kickoff plan finalized (P5-K1..K3) and ready for execution.
 - `/api/v1` router + metadata + docs updates shipped (P5-A1..A3); legacy `/api/*` paths remain during migration.
+- Multi-tenant schema groundwork underway; `db_schema.sql` now includes org/workspace tables (P5-S1).
+- User service ensures default org/workspace memberships and ingestion now tags chunks with `workspace_id` (P5-S2/P5-S3).
 
 ---
 
@@ -445,14 +447,30 @@ All changes followed these principles:
 **Goal:** Ship versioned REST skeleton with minimal disruption.
 
 ## TODOs
-- [ ] **P5-A1: Introduce `/api/v1` router**
+- [x] **P5-A1: Introduce `/api/v1` router**
   - Register an `APIRouter` in `server.py` and expose existing REST endpoints under the versioned prefix while keeping legacy paths.
-- [ ] **P5-A2: Refresh OpenAPI metadata**
+- [x] **P5-A2: Refresh OpenAPI metadata**
   - Ensure `/docs` reflects versioned routes and note API key/JWT requirements placeholder.
-- [ ] **P5-A3: Document rollout**
+- [x] **P5-A3: Document rollout**
   - Update `CHANGELOG.md` + quick reference with API v1 notes and dual-route guidance.
 
-**Status:** Starting with P5-A1.
+**Status:** ✅ API quick wins completed – legacy + versioned routes coexist.
+
+---
+
+# Phase 5 Multi-Tenant Schema (Nov 18, 2025)
+
+**Goal:** Introduce org/workspace structure so we can isolate data per tenant.
+
+## TODOs
+- [ ] **P5-S1: Extend database schema**
+  - Add `organizations`, `user_organizations`, `workspaces`, and `workspace_members` tables (with quota placeholders) in `db_schema.sql`.
+- [ ] **P5-S2: Update user service models**
+  - Wire new tables into `user_service.py` (create/list memberships) and ensure defaults for single-tenant bootstrapping.
+- [ ] **P5-S3: Migrate ingestion metadata**
+  - Prepare chunk/source ingestion code to carry `workspace_id` (fallback to default workspace if absent).
+
+**Status:** Awaiting execution – starting with P5-S1.
 
 ---
 

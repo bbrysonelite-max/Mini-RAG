@@ -137,7 +137,7 @@ def parse_vtt(path: str):
         parts.append((start, end, c.text.replace("\n", " ").strip()))
     return parts
 
-def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
+def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None, workspace_id=None):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".srt":
         parts = parse_srt(path)
@@ -164,6 +164,8 @@ def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en", us
         # Add user_id if provided
         if user_id:
             chunk["user_id"] = user_id
+        if workspace_id:
+            chunk["workspace_id"] = workspace_id
         rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl}
@@ -188,7 +190,7 @@ def read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
+def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None, workspace_id=None):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
         text = read_pdf(path)
@@ -212,6 +214,8 @@ def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=
         # Add user_id if provided
         if user_id:
             chunk["user_id"] = user_id
+        if workspace_id:
+            chunk["workspace_id"] = workspace_id
         rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl}
@@ -240,7 +244,7 @@ def fetch_youtube_transcript(video_id: str, lang="en"):
         return None
     return None
 
-def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None):
+def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None, workspace_id=None):
     vid = _extract_video_id(url)
     if not vid:
         raise ValueError("Could not extract video id from URL")
@@ -265,6 +269,8 @@ def ingest_youtube(url: str, out_jsonl="out/chunks.jsonl", language="en", user_i
         # Add user_id if provided
         if user_id:
             chunk["user_id"] = user_id
+        if workspace_id:
+            chunk["workspace_id"] = workspace_id
         rows.append(chunk)
     write_jsonl(out_jsonl, rows)
     return {"written": len(rows), "path": out_jsonl, "video_id": vid}
