@@ -482,11 +482,14 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    # Resolve workspace context to enforce multi-tenant isolation during search.
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+
     # Add timeout for query processing
     import asyncio
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user),
+            asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user, workspace_id),
             timeout=30.0  # 30 second timeout
         )
         return result
@@ -496,12 +499,12 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
             detail="Request timed out. Please try a simpler query or contact support."
         )
 
-def _process_query(query: str, k: int, user: Dict[str, Any]):
+def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
     """Process query synchronously (called from async context)."""
     ensure_index()
     # Filter by user_id for data isolation
     user_id = user.get('user_id') if user else None
-    ranked = INDEX.search(query, k=k, user_id=user_id)
+    ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
     top = [CHUNKS[i] for i,_ in ranked]
     snippets = [c.get("content","").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]

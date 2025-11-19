@@ -18,6 +18,7 @@ import asyncio
 import os
 import sys
 import logging
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,11 +83,95 @@ async def test_vector_store_operations():
         
         db = await init_database()
         vector_store = VectorStore(db)
-        
-        # Test data
-        test_chunk_id = "test-chunk-001"
+
+        # Ensure prerequisite records exist for chunk foreign keys
+        owner = await db.fetch_one("SELECT id FROM users LIMIT 1")
+        new_owner = False
+        if not owner:
+            owner = await db.fetch_one(
+                """
+                INSERT INTO users (email, name, role)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                ("vector-owner@example.com", "Vector Owner", "admin"),
+            )
+            new_owner = True
+        owner_id = owner["id"]
+
+        org = await db.fetch_one(
+            """
+            INSERT INTO organizations (name, slug)
+            VALUES ($1, $2)
+            RETURNING id
+            """,
+            ("Vector Org", f"vector-org-{uuid.uuid4().hex[:6]}")
+        )
+        org_id = org["id"]
+
+        workspace = await db.fetch_one(
+            """
+            INSERT INTO workspaces (organization_id, name, slug)
+            VALUES ($1, $2, $3)
+            RETURNING id
+            """,
+            (org_id, "Vector Workspace", f"vector-ws-{uuid.uuid4().hex[:6]}")
+        )
+        workspace_id = workspace["id"]
+
+        project = await db.fetch_one(
+            """
+            INSERT INTO projects (organization_id, workspace_id, owner_id, name, description, namespace, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+            """,
+            (
+                org_id,
+                workspace_id,
+                owner_id,
+                "Vector Project",
+                "Test project for vector store ops",
+                f"vector-proj-{uuid.uuid4().hex[:8]}",
+                "ready",
+            ),
+        )
+        project_id = project["id"]
+
+        source = await db.fetch_one(
+            """
+            INSERT INTO sources (project_id, workspace_id, type, uri, status)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+            """,
+            (project_id, workspace_id, "document", "vector://test", "ready"),
+        )
+        source_id = source["id"]
+
+        document = await db.fetch_one(
+            """
+            INSERT INTO documents (source_id, workspace_id, title, language)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+            """,
+            (source_id, workspace_id, "Vector Doc", "en"),
+        )
+        document_id = document["id"]
+
+        test_chunk_id = str(uuid.uuid4())
         test_embedding = [0.1] * 1536  # Dummy 1536-dim vector
         test_model = "text-embedding-3-small"
+        chunk_text = "Vector store test chunk"
+
+        async def insert_chunk(chunk_id: str, text: str, position: int = 0) -> None:
+            await db.execute(
+                """
+                INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                (chunk_id, org_id, workspace_id, document_id, project_id, text, position),
+            )
+
+        await insert_chunk(test_chunk_id, chunk_text, 0)
         
         # Test insert
         print("\nTesting insert...")
@@ -112,10 +197,11 @@ async def test_vector_store_operations():
         
         # Test batch insert
         print("\nTesting batch insert...")
-        batch_embeddings = [
-            (f"test-chunk-{i:03d}", [0.1 * i] * 1536, test_model)
-            for i in range(2, 11)
-        ]
+        batch_embeddings = []
+        for i in range(2, 11):
+            cid = str(uuid.uuid4())
+            await insert_chunk(cid, f"Vector chunk {i}", i)
+            batch_embeddings.append((cid, [0.1 * i] * 1536, test_model))
         batch_result = await vector_store.insert_embeddings_batch(batch_embeddings)
         if batch_result['inserted'] == 9:
             print(f"✓ Batch inserted {batch_result['inserted']} embeddings")
@@ -135,9 +221,19 @@ async def test_vector_store_operations():
             print("✗ Delete failed")
         
         # Clean up test data
-        for i in range(2, 11):
-            await vector_store.delete_embedding(f"test-chunk-{i:03d}")
-        
+        for chunk_id, *_ in batch_embeddings:
+            await vector_store.delete_embedding(chunk_id)
+
+        # Cleanup inserted records
+        await db.execute("DELETE FROM chunks WHERE document_id = $1", (document_id,))
+        await db.execute("DELETE FROM documents WHERE id = $1", (document_id,))
+        await db.execute("DELETE FROM sources WHERE id = $1", (source_id,))
+        await db.execute("DELETE FROM projects WHERE id = $1", (project_id,))
+        await db.execute("DELETE FROM workspaces WHERE id = $1", (workspace_id,))
+        await db.execute("DELETE FROM organizations WHERE id = $1", (org_id,))
+        if new_owner:
+            await db.execute("DELETE FROM users WHERE id = $1", (owner_id,))
+ 
         return True
     
     except Exception as e:

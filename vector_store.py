@@ -194,6 +194,8 @@ class VectorStore:
             """
             
             result = await self.db.fetch_one(query, (chunk_id,))
+            if result:
+                result["chunk_id"] = str(result["chunk_id"])
             return result
         
         except Exception as e:

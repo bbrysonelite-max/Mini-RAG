@@ -21,4 +21,10 @@
 - Extended `db_schema.sql` with `organizations`, `user_organizations`, `workspaces`, and `workspace_members` tables to support multi-tenant planning.
 - User service now provisions default org/workspace memberships; ingestion attaches `workspace_id` to chunk records for future isolation.
 
+### 2025-11-19
+- Updated `raglite.py` CLI ingest commands to accept optional `--user-id` and `--workspace-id` flags, mirroring the server-side multi-tenant tagging.
+- Added `test_cli_workspace_flags` to `test_rag_pipeline.py` to verify CLI ingestion persists the workspace/user metadata.
+- Documented the new CLI flags in `docs/guides/QUICK_REFERENCE.md` with macOS-friendly usage tips.
+- Ran integration suite (`cd /Users/brentbryson/Desktop/mini-rag && ./venv/bin/python3 test_rag_pipeline.py`); **all 7 tests passed** ✅ covering workspace isolation, CLI tagging, and backup safety.
+
 

@@ -463,14 +463,19 @@ All changes followed these principles:
 **Goal:** Introduce org/workspace structure so we can isolate data per tenant.
 
 ## TODOs
-- [ ] **P5-S1: Extend database schema**
+- [x] **P5-S1: Extend database schema**
   - Add `organizations`, `user_organizations`, `workspaces`, and `workspace_members` tables (with quota placeholders) in `db_schema.sql`.
-- [ ] **P5-S2: Update user service models**
+- [x] **P5-S2: Update user service models**
   - Wire new tables into `user_service.py` (create/list memberships) and ensure defaults for single-tenant bootstrapping.
-- [ ] **P5-S3: Migrate ingestion metadata**
+- [x] **P5-S3: Migrate ingestion metadata**
   - Prepare chunk/source ingestion code to carry `workspace_id` (fallback to default workspace if absent).
 
-**Status:** Awaiting execution – starting with P5-S1.
+**Status:** ✅ Schema + service wiring verified with live PostgreSQL instance (Nov 19, 2025).
+
+## Review
+- Loaded `db_schema.sql` into Dockerized PostgreSQL (`mini-rag-db`) and confirmed pgvector extension + multi-tenant tables exist.
+- `user_service` default membership flow exercised via `test_phase3_auth.py` against the live database, creating default org/workspace + ownership metadata.
+- Server and CLI ingestion paths tag `workspace_id` (and optional `user_id`), with regression coverage in `test_workspace_isolation` and `test_cli_workspace_flags`.
 
 ---
 
@@ -484,3 +489,96 @@ All changes followed these principles:
 - [x] **S3: Implement minimal fix** – reinstalled uvicorn inside the current venv so `venv/bin/uvicorn` now points to `/Users/brentbryson/Desktop/mini-rag/venv/bin/python`.
 - [x] **S4: Verify locally** – ran `source venv/bin/activate && venv/bin/uvicorn server:app --port 9000`, hit `/health`, and received a healthy response while auth remained optional.
 - [x] **S5: Document findings** – captured summary + verification in “Server Availability Investigation Review”.
+
+---
+
+# Session Plan – Nov 19, 2025
+
+**Goal:** Continue Phase 5 multi-tenant schema execution with the lightest possible touch while keeping ingestion and retrieval flows consistent.
+
+## TODOs
+- [x] **SP1:** Confirm `db_schema.sql` tables/indexes cover Phase 5 requirements and note any deltas for future migrations.
+- [x] **SP2:** Trace `user_service.py` usage to ensure default organization/workspace bootstrap and membership listing paths behave with the new schema.
+- [x] **SP3:** Follow ingestion flow (`raglite.py`, API helpers) end-to-end to verify `workspace_id` tagging logic; update retrieval filtering if gaps appear.
+- [x] **SP4:** Refresh automated coverage and smoke scripts so workspace-aware ingestion/retrieval paths stay protected.
+- [x] **SP5:** Document changes and outcomes here plus update supporting docs if adjustments were required.
+
+## Review
+- Verified `db_schema.sql` already defines `organizations`, `workspaces`, membership joins, supporting indexes, and quota scaffolding required for Phase 5 multi-tenancy; no schema deltas needed yet.
+- Traced Google OAuth callback through `UserService.create_or_update_user()` and `_ensure_default_membership()` to confirm default org/workspace ownership persists correctly for initial admins and subsequent members.
+- Closed a workspace-filtering gap by passing the resolved workspace ID into `_process_query()` so `/ask` requests stay scoped to the caller’s workspace.
+- Added `test_workspace_isolation()` in `test_rag_pipeline.py` to ingest workspace-tagged docs, assert metadata preservation, and prove `SimpleIndex.search()` respects workspace filters alongside the existing suite.
+
+---
+
+# Session Plan – Nov 19, 2025 (CLI Workspace Controls)
+
+**Goal:** Let CLI ingestion mirror server multi-tenant support by allowing optional workspace/user targeting while keeping defaults simple.
+
+## TODOs
+- [x] **CW1:** Review `raglite.py` CLI parser and ensure we understand current ingest command argument handling.
+- [x] **CW2:** Add optional `--workspace-id` and `--user-id` flags for ingest commands and thread them into the ingestion helpers safely.
+- [x] **CW3:** Update regression coverage or smoke tests (e.g., extend CLI-related checks) so workspace-aware ingestion paths stay protected.
+- [x] **CW4:** Refresh documentation and this plan’s review with the new CLI options and any behavioral notes.
+
+## Review
+- Added optional workspace/user flags to every CLI ingest command in `raglite.py`, matching the existing ingestion helper signatures.
+- Extended `test_rag_pipeline.py` with `test_cli_workspace_flags`, confirming CLI runs persist `user_id` and `workspace_id` metadata.
+- Documented the new flags and macOS usage tips in `docs/guides/QUICK_REFERENCE.md`, plus recorded the change in `CHANGELOG.md`.
+- Re-ran `./venv/bin/python3 test_rag_pipeline.py` (use `
+
+# Session Plan – Nov 19, 2025 (Phase 4 Robustness Roadmap)
+
+**Goal:** Break Phase 4 backlog into concrete engineering tracks covering monitoring, performance, and UX polish for upcoming commercial readiness sprints.
+
+## TODOs
+- [x] **R1:** Inventory observability gaps (logs, metrics, health endpoints) and propose tooling (e.g., structured logging, Prometheus exporters, alerting).
+- [x] **R2:** Capture current performance bottlenecks (ingest, search, response latency) and outline measurement + optimization tasks (profiling, caching, batching).
+- [x] **R3:** Audit user experience touchpoints (web UI flows, error surfaces) and draft a minimal set of polish tasks (loading states, keyboard shortcuts, onboarding).
+- [x] **R4:** Prioritize the above into a phased execution plan with estimated effort and dependencies.
+
+## Review
+- **Observability plan (R1):** keep the existing rotating file logger but add JSON console logs for ingestion/query events, wire SlowAPI metrics into a Prometheus endpoint, and forward UVicorn/DB health checks to a `/metrics` exporter plus lightweight uptime alerts (e.g., Healthchecks.io) before deploying heavier tooling.
+- **Performance plan (R2):** profile ingestion/write paths with `cProfile` + async timings, add chunk-count caching + index warmers, defer vector embedding to background jobs, and explore Redis caching for query results/YouTube transcripts; track baseline latency with the new metrics stack.
+- **UX polish list (R3):** implement optimistic ingest UI states, surface chunk counts + source badges, add keyboard shortcuts (`Cmd` + `Enter` to ask, `Cmd` + `K` for focus), provide onboarding checklist within `/app`, and expose clear error toasts for auth/ingest failures.
+- **Prioritized rollout (R4):** Phase 4A (1 week) – observability + latency baseline; Phase 4B (1-2 weeks) – performance quick wins and background embedding queue; Phase 4C (1 week) – UX polish and onboarding; each phase ends with regression runs (`Cmd` + `Shift` + `T` for last test suite) and CHANGELOG entries.
+
+---
+
+# Session Plan – Nov 19, 2025 (Phase 5 Commercial Features)
+
+**Goal:** Define the minimal feature set (API keys, usage quotas, billing readiness, SDK/docs) required for a paid launch and break it into actionable tracks.
+
+## TODOs
+- [x] **C1:** Draft auth strategy for API keys layered on existing JWT (key issuance, storage, revocation, request signing).
+- [x] **C2:** Map quota enforcement requirements (per-tenant limits, rate ceilings, alerts) and outline schema/logging updates.
+- [x] **C3:** Outline billing/subscription integration plan (Stripe primitives, webhook handling, subscription states) tied to org/workspace model.
+- [x] **C4:** Identify external-facing deliverables (OpenAPI upgrades, SDK scaffolds, docs) and the sequencing with backend work.
+- [x] **C5:** Produce an execution roadmap with dependencies, required tooling, and testing strategy (unit + contract tests).
+
+## Review
+- **API keys (C1):** Introduce an `api_keys` table (hashed key, prefix, scopes, owner user/workspace), admin issuance UI, HMAC header verification middleware, and rotation/revocation endpoints; reuse existing JWT for browser users while API callers rely on signed requests.
+- **Quotas & usage (C2):** Add `usage_counters` + `quota_settings` tables keyed by organization/workspace, capture request metrics via SlowAPI + structured logs, enqueue nightly rollups, and expose admin dashboards plus alert hooks when thresholds exceed 80%.
+- **Billing & subscriptions (C3):** Model subscription tiers with Stripe (Products, Prices, Checkout links), store subscription status + customer IDs in `organizations`, handle webhook events (`checkout.session.completed`, `invoice.payment_failed`) to update quota entitlements, and gate ingestion on active status.
+- **External deliverables (C4):** Publish versioned OpenAPI docs with API key auth schemas, scaffold Python/TypeScript SDKs, expand onboarding docs (setup guide, rate-limit etiquette, billing FAQs), and add sample Postman collection.
+- **Execution roadmap (C5):** Phase 5A (2 weeks) – API key issuance + request auth; Phase 5B (2 weeks) – quota tracking and alerts; Phase 5C (3 weeks) – Stripe integration + billing lifecycle tests; Phase 5D (1 week) – docs/SDK polish and contract testing; each phase culminates in CHANGELOG updates and automated regression suite runs (`Cmd` + `Shift` + `T`).
+
+---
+
+# Session Plan – Nov 19, 2025 (Vector Stack Validation)
+
+**Goal:** Replace remaining demo assumptions by exercising vector storage against PostgreSQL/pgvector and confirming CLI/server ingestion can interop with the DB-backed stack.
+
+## TODOs
+- [x] **V1:** Provision live PostgreSQL + pgvector locally (Docker) and load `db_schema.sql`.
+- [x] **V2:** Run `test_phase3_auth.py` with `DATABASE_URL` to validate auth + default membership flows use the database successfully.
+- [x] **V3:** Fix vector store CRUD tests so they operate on real UUID chunk records and clean up after themselves.
+- [x] **V4:** Ensure `test_pgvector.py` passes end-to-end, noting current dependency on external embedding providers.
+
+## Review
+- Live database container `mini-rag-db` now has pgvector installed; schema initialized via `/tmp/db_schema.sql` load.
+- Authentication suite passes against PostgreSQL, confirming `UserService` default org/workspace bootstrapping using real SQL (parameter normalization + placeholder conversion handled in `database.py`).
+- Vector store tests create temporary org/workspace/project/source/chunk rows and insert embeddings with UUIDs, ensuring foreign keys hold; cleanup removes fixtures post-test.
+- `test_pgvector.py` now passes fully (vector CRUD + pipeline/performance sections) though embedding generation still logs warnings when OpenAI API key is absent—documented as current limitation for production validation.
+
+---

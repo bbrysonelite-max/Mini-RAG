@@ -460,20 +460,20 @@ def main():
     p = argparse.ArgumentParser(prog="raglite")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    y = sub.add_parser("ingest-youtube"); y.add_argument("--url", required=True); y.add_argument("--out", default="out/chunks.jsonl"); y.add_argument("--language", default="en")
-    t = sub.add_parser("ingest-transcript"); t.add_argument("--path", required=True); t.add_argument("--out", default="out/chunks.jsonl"); t.add_argument("--language", default="en")
-    d = sub.add_parser("ingest-docs"); d.add_argument("--path", required=True); d.add_argument("--out", default="out/chunks.jsonl"); d.add_argument("--language", default="en")
+    y = sub.add_parser("ingest-youtube"); y.add_argument("--url", required=True); y.add_argument("--out", default="out/chunks.jsonl"); y.add_argument("--language", default="en"); y.add_argument("--user-id", default=None); y.add_argument("--workspace-id", default=None)
+    t = sub.add_parser("ingest-transcript"); t.add_argument("--path", required=True); t.add_argument("--out", default="out/chunks.jsonl"); t.add_argument("--language", default="en"); t.add_argument("--user-id", default=None); t.add_argument("--workspace-id", default=None)
+    d = sub.add_parser("ingest-docs"); d.add_argument("--path", required=True); d.add_argument("--out", default="out/chunks.jsonl"); d.add_argument("--language", default="en"); d.add_argument("--user-id", default=None); d.add_argument("--workspace-id", default=None)
 
     s = sub.add_parser("serve"); s.add_argument("--chunks", default="out/chunks.jsonl"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
     r = sub.add_parser("restore-backup"); r.add_argument("--chunks", default="out/chunks.jsonl"); r.add_argument("--backup", default=None)
 
     args = p.parse_args()
     if args.cmd == "ingest-youtube":
-        res = ingest_youtube(args.url, out_jsonl=args.out, language=args.language)
+        res = ingest_youtube(args.url, out_jsonl=args.out, language=args.language, user_id=args.user_id, workspace_id=args.workspace_id)
     elif args.cmd == "ingest-transcript":
-        res = ingest_transcript(args.path, out_jsonl=args.out, language=args.language)
+        res = ingest_transcript(args.path, out_jsonl=args.out, language=args.language, user_id=args.user_id, workspace_id=args.workspace_id)
     elif args.cmd == "ingest-docs":
-        res = ingest_docs(args.path, out_jsonl=args.out, language=args.language)
+        res = ingest_docs(args.path, out_jsonl=args.out, language=args.language, user_id=args.user_id, workspace_id=args.workspace_id)
     elif args.cmd == "serve":
         run_server(args.chunks, args.host, args.port); return
     elif args.cmd == "restore-backup":

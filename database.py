@@ -10,6 +10,7 @@ Handles:
 
 import os
 import logging
+import re
 from typing import Optional, Any, Dict, List
 from contextlib import asynccontextmanager
 
@@ -107,10 +108,26 @@ class Database:
         async with self.pool.connection() as conn:
             yield conn
     
+    def _normalize_params(self, params: Optional[Any]) -> Optional[Any]:
+        """Ensure query parameters are in a psycopg-friendly format."""
+        if params is None:
+            return None
+        if isinstance(params, dict):
+            return params
+        if isinstance(params, (list, tuple)):
+            return tuple(params)
+        return (params,)
+
+    def _convert_placeholders(self, query: str) -> str:
+        """Convert $n style placeholders to %s for psycopg compatibility."""
+        if not query or "$" not in query:
+            return query
+        return re.sub(r"\$(\d+)", "%s", query)
+
     async def execute(
         self,
         query: str,
-        params: Optional[tuple] = None,
+        params: Optional[Any] = None,
         fetch: bool = False
     ) -> Optional[List[Any]]:
         """
@@ -126,7 +143,7 @@ class Database:
         """
         async with self.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(query, params)
+                await cur.execute(self._convert_placeholders(query), self._normalize_params(params))
                 if fetch:
                     return await cur.fetchall()
                 await conn.commit()
@@ -146,13 +163,13 @@ class Database:
         """
         async with self.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.executemany(query, params_list)
+                await cur.executemany(self._convert_placeholders(query), [self._normalize_params(p) for p in params_list])
                 await conn.commit()
     
     async def fetch_one(
         self,
         query: str,
-        params: Optional[tuple] = None
+        params: Optional[Any] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch a single row.
@@ -166,13 +183,13 @@ class Database:
         """
         async with self.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(query, params)
+                await cur.execute(self._convert_placeholders(query), self._normalize_params(params))
                 return await cur.fetchone()
     
     async def fetch_all(
         self,
         query: str,
-        params: Optional[tuple] = None
+        params: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetch all rows.
@@ -186,7 +203,7 @@ class Database:
         """
         async with self.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(query, params)
+                await cur.execute(self._convert_placeholders(query), self._normalize_params(params))
                 return await cur.fetchall()
     
     async def init_schema(self, schema_file: str = "db_schema.sql") -> None:

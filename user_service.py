@@ -52,7 +52,7 @@ class UserService:
                 WHERE email = $2
                 RETURNING id, email, name, role, created_at, updated_at
             """
-            user = await self.db.fetch_one(query, name, email)
+            user = await self.db.fetch_one(query, (name, email))
             logger.info(f"Updated existing user: {email}")
         else:
             # Check if this is the first user (make them admin)
@@ -69,7 +69,7 @@ class UserService:
                 VALUES ($1, $2, $3)
                 RETURNING id, email, name, role, created_at, updated_at
             """
-            user = await self.db.fetch_one(query, email, name, role)
+            user = await self.db.fetch_one(query, (email, name, role))
             logger.info(f"Created new user: {email} with role: {role}")
         
         user_dict = dict(user) if user else None
@@ -138,7 +138,7 @@ class UserService:
             WHERE id = $2
             RETURNING id, email, name, role, created_at, updated_at
         """
-        user = await self.db.fetch_one(query, role, user_id)
+        user = await self.db.fetch_one(query, (role, user_id))
         
         if user:
             logger.info(f"Updated user {user_id} role to: {role}")

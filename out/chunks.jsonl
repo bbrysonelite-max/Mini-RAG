@@ -1,0 +1,1 @@
+{"id": "82667559b7182f28e452ffbd377f02a3", "source": {"type": "document", "path": "examples/transcripts/sample.txt"}, "content": "This is a small sample about building a RAG system from videos and guides.\nIt demonstrates ingestion and retrieval.", "metadata": {"language": "en", "chunk_index": 0, "chunk_count": 1, "doc_section": null, "created_at": "2025-11-19T02:44:48.209210Z"}}

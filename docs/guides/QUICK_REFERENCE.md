@@ -72,6 +72,7 @@
 - Prefer the automated flow: `./venv/bin/python raglite.py restore-backup --chunks out/chunks.jsonl` restores from the latest snapshot; add `--backup backups/chunks-<timestamp>.jsonl` to pick a specific file.
 - Chunk writes use copy-on-write staging + `os.replace`, so ingestion either keeps the old file or atomically swaps in the fully-written version.
 - Keep older snapshots for audits and prune with a retention policy (for example, `find backups -type f -mtime +7 -delete`).
+- CLI ingest commands (`ingest-docs`, `ingest-transcript`, `ingest-youtube`) accept optional `--user-id` and `--workspace-id` flags so you can tag chunks from Terminal. Example: `./venv/bin/python raglite.py ingest-docs --path ./notes/intro.md --out out/chunks.jsonl --user-id $(uuidgen) --workspace-id default-workspace` (use `Cmd` + `Shift` + `.` in Finder to reveal hidden folders before copying paths).
 
 ### Usability
 - [ ] User-friendly error messages

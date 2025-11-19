@@ -6,6 +6,8 @@ Tests:
 2. Hybrid retrieval (BM25 + vector)
 3. Filtering by source_type, confidentiality
 4. Abstention behavior
+5. Workspace isolation for multi-tenancy
+6. Chunk backup and restore safety
 
 Run with: python test_rag_pipeline.py
 """
@@ -21,8 +23,8 @@ from pathlib import Path
 
 from rag_pipeline import RAGPipeline, RetrieveOptions
 from model_service_impl import ConcreteModelService
-from raglite import write_jsonl
-from retrieval import delete_source_chunks, get_unique_sources, load_chunks
+from raglite import write_jsonl, ingest_docs
+from retrieval import delete_source_chunks, get_unique_sources, load_chunks, SimpleIndex
 from chunk_backup import restore_chunk_backup
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -239,10 +241,133 @@ async def test_abstention():
     return True
 
 
+async def test_workspace_isolation():
+    """Ensure ingestion tags workspace_id and retrieval respects workspace filters."""
+    print("\n" + "="*60)
+    print("TEST 5: Workspace Isolation")
+    print("="*60)
+
+    success = True
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        chunks_path = os.path.join(tmp_dir, "chunks.jsonl")
+        workspace_a = "ws-1"
+        workspace_b = "ws-2"
+        user_id = "user-123"
+
+        doc_a = Path(tmp_dir) / "workspace_a.txt"
+        doc_b = Path(tmp_dir) / "workspace_b.txt"
+        doc_a.write_text("Apples grow on trees. Workspace alpha loves apples.", encoding="utf-8")
+        doc_b.write_text("Bananas grow on plants. Workspace beta loves bananas.", encoding="utf-8")
+
+        # Ingest documents with explicit workspace tagging.
+        ingest_docs(str(doc_a), out_jsonl=chunks_path, language="en", user_id=user_id, workspace_id=workspace_a)
+        ingest_docs(str(doc_b), out_jsonl=chunks_path, language="en", user_id=user_id, workspace_id=workspace_b)
+
+        chunks = load_chunks(chunks_path)
+        if len(chunks) != 2:
+            print(f"✗ Expected 2 ingested chunks, found {len(chunks)}")
+            return False
+
+        workspace_ids = {chunk.get("workspace_id") for chunk in chunks}
+        if {workspace_a, workspace_b} != workspace_ids:
+            print(f"✗ Workspace tags missing or incorrect: {workspace_ids}")
+            success = False
+        else:
+            print("✓ Ingestion preserved workspace metadata")
+
+        index = SimpleIndex(chunks)
+
+        apples_local = index.search("apples", k=5, workspace_id=workspace_a)
+        apples_cross = index.search("apples", k=5, workspace_id=workspace_b)
+        bananas_local = index.search("bananas", k=5, workspace_id=workspace_b)
+        bananas_cross = index.search("bananas", k=5, workspace_id=workspace_a)
+
+        def _workspace_ids(results):
+            return {chunks[idx].get("workspace_id") for idx, _ in results}
+
+        if not apples_local or _workspace_ids(apples_local) != {workspace_a}:
+            print("✗ Workspace A query did not return exclusively workspace A chunks")
+            success = False
+        if _workspace_ids(apples_cross) & {workspace_a}:
+            print("✗ Workspace filter leaked workspace A chunks into workspace B query")
+            success = False
+        if not bananas_local or _workspace_ids(bananas_local) != {workspace_b}:
+            print("✗ Workspace B query did not return exclusively workspace B chunks")
+            success = False
+        if _workspace_ids(bananas_cross) & {workspace_b}:
+            print("✗ Workspace filter leaked workspace B chunks into workspace A query")
+            success = False
+
+        if success:
+            print("✓ Workspace filters isolate search results correctly")
+
+    return success
+
+
+async def test_cli_workspace_flags():
+    """Verify CLI ingestion threads user/workspace IDs into chunks."""
+    print("\n" + "="*60)
+    print("TEST 6: CLI Workspace Flags")
+    print("="*60)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_path = Path(tmp_dir) / "cli_doc.txt"
+        doc_path.write_text("CLI workspace isolation check.", encoding="utf-8")
+
+        chunks_path = Path(tmp_dir) / "chunks.jsonl"
+        user_id = "cli-user-1"
+        workspace_id = "cli-workspace-1"
+
+        cmd = [
+            sys.executable,
+            "raglite.py",
+            "ingest-docs",
+            "--path",
+            str(doc_path),
+            "--out",
+            str(chunks_path),
+            "--user-id",
+            user_id,
+            "--workspace-id",
+            workspace_id,
+        ]
+
+        try:
+            subprocess.run(
+                cmd,
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            print("✗ CLI ingest-docs failed")
+            print(exc.stdout)
+            print(exc.stderr)
+            return False
+
+        chunks = load_chunks(str(chunks_path))
+        if len(chunks) != 1:
+            print(f"✗ Expected 1 chunk, found {len(chunks)}")
+            return False
+
+        chunk = chunks[0]
+        if chunk.get("user_id") != user_id:
+            print(f"✗ user_id mismatch: {chunk.get('user_id')} != {user_id}")
+            return False
+        if chunk.get("workspace_id") != workspace_id:
+            print(f"✗ workspace_id mismatch: {chunk.get('workspace_id')} != {workspace_id}")
+            return False
+
+        print("✓ CLI ingestion tagged user_id and workspace_id correctly")
+    return True
+
+
 async def test_chunk_backups():
     """Test that chunk backups are created for append and rewrite flows."""
     print("\n" + "="*60)
-    print("TEST 5: Chunk Backup Safety")
+    print("TEST 7: Chunk Backup Safety")
     print("="*60)
 
     success = True
@@ -466,11 +591,25 @@ async def main():
         print(f"\n✗ Test 4 failed: {e}")
         results.append(("Abstention", False))
     
-    # Test 5: Chunk backups
+    # Test 5: Workspace isolation
+    try:
+        results.append(("Workspace Isolation", await test_workspace_isolation()))
+    except Exception as e:
+        print(f"\n✗ Test 5 failed: {e}")
+        results.append(("Workspace Isolation", False))
+    
+    # Test 6: CLI workspace flags
+    try:
+        results.append(("CLI Workspace Flags", await test_cli_workspace_flags()))
+    except Exception as e:
+        print(f"\n✗ Test 6 failed: {e}")
+        results.append(("CLI Workspace Flags", False))
+    
+    # Test 7: Chunk backups
     try:
         results.append(("Chunk Backup Safety", await test_chunk_backups()))
     except Exception as e:
-        print(f"\n✗ Test 5 failed: {e}")
+        print(f"\n✗ Test 7 failed: {e}")
         results.append(("Chunk Backup Safety", False))
     
     # Summary
