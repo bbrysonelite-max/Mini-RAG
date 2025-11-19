@@ -25,8 +25,12 @@ class FakeDatabase:
 
     def __init__(self):
         self.users = []
+        self.org_id = "org-default"
+        self.workspace_id = "workspace-default"
 
     async def fetch_one(self, query, *args):
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            args = tuple(args[0])
         q = " ".join(query.split()).lower()
 
         if "count(*)" in q:
@@ -69,6 +73,12 @@ class FakeDatabase:
                     return user.copy()
             return None
 
+        if q.startswith("insert into organizations"):
+            return {"id": self.org_id}
+
+        if q.startswith("insert into workspaces"):
+            return {"id": self.workspace_id}
+
         if q.startswith("update users") and "set role" in q:
             role, user_id = args
             for user in self.users:
@@ -85,6 +95,9 @@ class FakeDatabase:
         if q.startswith("select") and "from users" in q:
             return [user.copy() for user in sorted(self.users, key=lambda u: u["created_at"], reverse=True)]
         return []
+
+    async def execute(self, query, *args):
+        return None
 
 def test_imports():
     """Test 1: Verify all imports work"""

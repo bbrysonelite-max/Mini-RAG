@@ -5,6 +5,56 @@
 
 ---
 
+# Phase 5 API Key Infrastructure (Nov 19, 2025)
+
+**Goal:** Establish secure API key storage and issuance mechanics to pave the way for authenticated programmatic access.
+
+## TODOs
+- [x] **A1: Add api_keys table to schema**
+  - Extended `db_schema.sql` with hashed key storage tied to users/workspaces plus supporting indexes.
+- [x] **A2: Implement API key service helpers**
+  - Added `api_key_service.py` with secure generation, listing, verification, revocation, and last-used tracking.
+- [x] **A3: Provide admin CLI command to issue keys**
+  - Created `scripts/manage_api_keys.py` (create/list/revoke) that prints the plaintext key exactly once.
+- [x] **A4: Add regression coverage**
+  - Added `test_api_keys.py` exercising create/list/revoke/verify flows via a fake database stub.
+- [x] **A5: Document and log change**
+  - Updated `docs/guides/QUICK_REFERENCE.md` with key issuance notes and recorded the feature in `CHANGELOG.md`.
+
+**Status:** ✅ Completed – API key infrastructure, tooling, tests, and docs shipped.
+
+## Review
+- Schema now includes `api_keys` table for hashed storage; helper service + admin CLI rely on it.
+- Added automated tests (`test_api_keys.py`) confirming key lifecycle (create/list/revoke/verify/touch).
+- Documentation (`docs/guides/QUICK_REFERENCE.md`) and `CHANGELOG.md` now cover issuance commands and audit trail.
+
+---
+
+# API Key Authentication Plan (Nov 19, 2025)
+
+**Goal:** Allow programmatic clients to authenticate with API keys in addition to JWT cookies, enforcing scopes per route.
+
+## TODOs
+- [x] **K1: Design API key auth strategy**
+  - Header: accept `X-API-Key` (primary) and `Authorization: ApiKey <token>` as fallback for tooling.
+  - Scopes: `read`, `write`, `admin` (default `read`); map to route groups (GET/list uses read, ingest uses write, admin endpoints require admin).
+  - Dual auth: prefer API key when header present; otherwise fall back to JWT (`get_current_user`). When both supplied, ensure workspace context comes from key.
+  - Workspace: resolve via stored `workspace_id`; if null, default to `_get_primary_workspace_id_for_user` using associated user (key owner).
+- [ ] **K2: Implement API key auth dependency**
+  - Create `api_key_auth.py` (or similar) with FastAPI dependency that verifies keys via `ApiKeyService` and raises HTTP errors on failure.
+- [x] **K3: Update routes for API key auth**
+  - `/ask`, ingest flows, dedupe, rebuild, and source/admin endpoints now call `_resolve_auth_context` with scope checks and honor API keys + JWT.
+- [x] **K4: Add tests for API key auth**
+  - Added `test_api_key_auth.py` to cover header extraction, scope enforcement, invalid keys, and audit updates via fake service.
+- [x] **K5: Document API key auth changes**
+  - Updated quick reference with header/scope notes and CHANGELOG with dependency + route/test updates.
+
+**Status:** ✅ Completed – API key authentication now wired through dependency, routes, tests, and documentation.
+
+**Status:** Draft – execution just approved.
+
+---
+
 ## Summary
 
 Phase 3 successfully implemented complete authentication and user management system with Google OAuth, database-backed users, endpoint protection, data isolation, and admin role management.
@@ -236,13 +286,20 @@ DATABASE_URL=postgresql://user:pass@localhost/rag_brain
 
 ## Next Steps
 
-**Phase 4: Robustness & Polish** (2-3 weeks)
+**Phase 4: Robustness & Polish** (8-12 hours)
 
 From ROADMAP.md:
 - Error recovery & backups
 - Monitoring & analytics  
 - Performance optimization
 - User experience improvements
+
+### Next Steps (Hours)
+
+- 2 hrs – Implement API key auth dependency (`K2`) with explicit error handling and scope checks.
+- 1.5 hrs – Expand API key regression coverage (`K4`) to cover header precedence and last-used tracking.
+- 1 hr – Refresh documentation and changelog for API key onboarding (`K5`).
+- 0.5 hr – Close out OAuth verification tasks (`V1`–`V4`) and capture results.
 
 **Current Status:**
 - ✅ Phase 1: Testing & Validation
@@ -262,6 +319,7 @@ All changes followed these principles:
 ✅ **Stayed inside the rails** - Followed established patterns
 ✅ **Backward compatible** - No breaking changes
 ✅ **Well-documented** - Comprehensive documentation created
+✅ **Hour-level planning** - Phase 4 scoped for 8-12 hours; Phase 5 prep locked to 12-20 hours
 - **Phase 3 Verification (Nov 18, 2025):**
   - Ran automated suite (`./venv/bin/python3 test_phase3_auth.py`) with 7/7 passing results using FakeDatabase for UserService coverage
   - Logged results and remaining manual follow-ups (browser OAuth + live PostgreSQL) in `CHANGELOG.md`
@@ -423,9 +481,9 @@ All changes followed these principles:
 **Goal:** Stand up the commercial readiness foundation (multi-tenant model + API contract).
 
 - [x] **P5-K1: Map Phase 5 backlog**
-  - Quick wins (days): expose `/api/v1/` router + OpenAPI polish, API keys piggybacking on JWT, user/API docs pass, Docker image + secrets template.
-  - Medium lifts (weeks): environment config tooling, CI/CD pipeline, basic org workspace schema, usage quotas instrumentation.
-  - Major initiatives (multi-week): full data isolation + billing/subscription flows, webhooks + SDKs, Kubernetes/horizontal scaling, compliance (GDPR, retention, policies).
+  - Quick wins (4-6 hours): expose `/api/v1/` router + OpenAPI polish, API keys piggybacking on JWT, user/API docs pass, Docker image + secrets template.
+  - Medium lifts (12-16 hours): environment config tooling, CI/CD pipeline, basic org workspace schema, usage quotas instrumentation.
+  - Major initiatives (20+ hours): full data isolation + billing/subscription flows, webhooks + SDKs, Kubernetes/horizontal scaling, compliance (GDPR, retention, policies).
 - [x] **P5-K2: Draft multi-tenant data model plan**
   - Staged approach: `organizations` + `workspaces`, membership tables (`user_organizations`, `workspace_members`), chunk annotations (`workspace_id`), quota tracking tables, default migration script for legacy data.
 - [x] **P5-K3: Outline API v1 surface**
@@ -541,7 +599,7 @@ All changes followed these principles:
 - **Observability plan (R1):** keep the existing rotating file logger but add JSON console logs for ingestion/query events, wire SlowAPI metrics into a Prometheus endpoint, and forward UVicorn/DB health checks to a `/metrics` exporter plus lightweight uptime alerts (e.g., Healthchecks.io) before deploying heavier tooling.
 - **Performance plan (R2):** profile ingestion/write paths with `cProfile` + async timings, add chunk-count caching + index warmers, defer vector embedding to background jobs, and explore Redis caching for query results/YouTube transcripts; track baseline latency with the new metrics stack.
 - **UX polish list (R3):** implement optimistic ingest UI states, surface chunk counts + source badges, add keyboard shortcuts (`Cmd` + `Enter` to ask, `Cmd` + `K` for focus), provide onboarding checklist within `/app`, and expose clear error toasts for auth/ingest failures.
-- **Prioritized rollout (R4):** Phase 4A (1 week) – observability + latency baseline; Phase 4B (1-2 weeks) – performance quick wins and background embedding queue; Phase 4C (1 week) – UX polish and onboarding; each phase ends with regression runs (`Cmd` + `Shift` + `T` for last test suite) and CHANGELOG entries.
+- **Prioritized rollout (R4):** Phase 4A (3-4 hours) – observability + latency baseline; Phase 4B (4-5 hours) – performance quick wins and background embedding queue; Phase 4C (2-3 hours) – UX polish and onboarding; each phase ends with regression runs (`Cmd` + `Shift` + `T` for last test suite) and CHANGELOG entries.
 
 ---
 
@@ -561,7 +619,7 @@ All changes followed these principles:
 - **Quotas & usage (C2):** Add `usage_counters` + `quota_settings` tables keyed by organization/workspace, capture request metrics via SlowAPI + structured logs, enqueue nightly rollups, and expose admin dashboards plus alert hooks when thresholds exceed 80%.
 - **Billing & subscriptions (C3):** Model subscription tiers with Stripe (Products, Prices, Checkout links), store subscription status + customer IDs in `organizations`, handle webhook events (`checkout.session.completed`, `invoice.payment_failed`) to update quota entitlements, and gate ingestion on active status.
 - **External deliverables (C4):** Publish versioned OpenAPI docs with API key auth schemas, scaffold Python/TypeScript SDKs, expand onboarding docs (setup guide, rate-limit etiquette, billing FAQs), and add sample Postman collection.
-- **Execution roadmap (C5):** Phase 5A (2 weeks) – API key issuance + request auth; Phase 5B (2 weeks) – quota tracking and alerts; Phase 5C (3 weeks) – Stripe integration + billing lifecycle tests; Phase 5D (1 week) – docs/SDK polish and contract testing; each phase culminates in CHANGELOG updates and automated regression suite runs (`Cmd` + `Shift` + `T`).
+- **Execution roadmap (C5):** Phase 5A (4-5 hours) – API key issuance + request auth; Phase 5B (3-4 hours) – quota tracking and alerts; Phase 5C (4-5 hours) – Stripe integration + billing lifecycle tests; Phase 5D (2-3 hours) – docs/SDK polish and contract testing; each phase culminates in CHANGELOG updates and automated regression suite runs (`Cmd` + `Shift` + `T`).
 
 ---
 

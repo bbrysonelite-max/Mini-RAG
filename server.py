@@ -1,6 +1,6 @@
 
-import os, json, subprocess, hashlib, re, logging, asyncio
-from typing import List, Optional, Dict, Any
+import os, json, subprocess, hashlib, re, logging, asyncio, time
+from typing import List, Optional, Dict, Any, Sequence, Tuple
 from pathlib import Path
 from fastapi import FastAPI, APIRouter, Form, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -16,10 +16,14 @@ from score import score_answer
 # Import ingestion functions directly from raglite for user_id support
 from raglite import ingest_youtube, ingest_transcript, ingest_docs
 
+from api_key_service import ApiKeyService
+from api_key_auth import configure_api_key_auth, get_api_key_principal, APIKeyPrincipal
+
 from chunk_backup import ChunkBackupError, create_chunk_backup
 
 from logging_utils import configure_logging
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter, Histogram, Gauge
 import httpx
 
 # Import database (optional - server works without it)
@@ -44,7 +48,7 @@ _chunk_count_stamp: Optional[float] = None
 API_DESCRIPTION = (
     "RAG Talking Agent backend.\n\n"
     "Versioned REST endpoints are available under `/api/v1`. "
-    "Authentication currently uses Google OAuth JWTs; API key support is planned."
+    "Authentication supports Google OAuth JWTs and API keys (set `X-API-Key`)."
 )
 
 app = FastAPI(
@@ -60,6 +64,32 @@ instrumentator.instrument(app).expose(
     app,
     endpoint="/metrics",
     include_in_schema=False,
+)
+
+# Prometheus metrics for request/ingest observability
+ASK_REQUEST_COUNTER = Counter(
+    "ask_requests_total",
+    "Total number of ask requests handled.",
+    ["outcome"],
+)
+ASK_LATENCY = Histogram(
+    "ask_request_latency_seconds",
+    "Latency of ask requests in seconds.",
+    ["outcome"],
+)
+INGEST_COUNTER = Counter(
+    "ingest_operations_total",
+    "Total ingest operations processed (server-side).",
+    ["source", "outcome"],
+)
+INGEST_LATENCY = Histogram(
+    "ingest_operation_latency_seconds",
+    "Latency of ingest operations in seconds.",
+    ["source", "outcome"],
+)
+CHUNK_COUNT_GAUGE = Gauge(
+    "chunk_records_total",
+    "Current number of chunk records available to the search index.",
 )
 
 # Session middleware (required for OAuth)
@@ -101,6 +131,21 @@ HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
 HEALTHCHECKS_PING_FAIL_URL = os.getenv("HEALTHCHECKS_PING_FAIL_URL")
 
 
+def _log_event(event: str, **fields: Any) -> None:
+    """
+    Emit structured JSON logs aligned with the UI observability dashboard.
+
+    Non-primitive values are coerced to strings so logging never raises.
+    """
+    payload: Dict[str, Any] = {"event": event}
+    for key, value in fields.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            payload[key] = value
+        else:
+            payload[key] = repr(value)
+    logger.info(event, extra=payload)
+
+
 async def _ping_healthchecks(success: bool, payload: Dict[str, Any]) -> None:
     """Send uptime pings to Healthchecks or similar services when configured."""
     if not HEALTHCHECKS_PING_URL:
@@ -127,6 +172,106 @@ async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> 
     except Exception as exc:
         logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
         return None
+
+async def _resolve_auth_context(
+    request: Request,
+    scopes: Sequence[str] = ("read",),
+    require: bool = False
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[APIKeyPrincipal]]:
+    """
+    Determine the caller identity using API keys (preferred) or JWT cookies.
+
+    Returns (user, workspace_id, api_key_principal).
+    """
+    api_key_principal = await get_api_key_principal(request, scopes=scopes, required=False)
+    if api_key_principal:
+        user: Optional[Dict[str, Any]] = None
+        if USER_SERVICE:
+            try:
+                user = await USER_SERVICE.get_user_by_id(api_key_principal.user_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load user %s for API key %s: %s",
+                    api_key_principal.user_id,
+                    api_key_principal.key_id,
+                    exc,
+                )
+        if not user:
+            user = {
+                "user_id": api_key_principal.user_id,
+                "role": "api_key",
+            }
+        workspace_id = api_key_principal.workspace_id
+        if workspace_id is None:
+            workspace_id = await _get_primary_workspace_id_for_user(user)
+        return user, workspace_id, api_key_principal
+
+    user = get_current_user(request)
+    if require and not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Supply an API key or sign in via Google OAuth.",
+        )
+    workspace_id = await _get_primary_workspace_id_for_user(user)
+    return user, workspace_id, None
+
+
+async def _warm_search_index() -> None:
+    """Load the search index on startup so the first query avoids cold-start penalties."""
+    if not os.path.exists(CHUNKS_PATH):
+        return
+    start = time.perf_counter()
+    try:
+        await asyncio.to_thread(ensure_index)
+    except Exception as exc:
+        _log_event("index.warm_failed", error=str(exc))
+        logger.warning("Index warmup failed: %s", exc)
+    else:
+        duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        _log_event(
+            "index.warm_completed",
+            duration_ms=duration_ms,
+            chunk_count=len(CHUNKS),
+        )
+        CHUNK_COUNT_GAUGE.set(len(CHUNKS))
+        logger.info("Index warmup completed in %sms (chunks=%s)", duration_ms, len(CHUNKS))
+
+
+async def _record_query_baseline() -> None:
+    """Capture a baseline ask latency sample for dashboards."""
+    start = time.perf_counter()
+    try:
+        await asyncio.to_thread(_process_query, "baseline measurement", 1, {}, None)
+    except IndexNotFoundError:
+        duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        ASK_LATENCY.labels(outcome="baseline_noindex").observe(max(duration_ms / 1000.0, 0.0))
+        _log_event(
+            "ask.baseline_skipped",
+            reason="index_not_found",
+            duration_ms=duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        ASK_LATENCY.labels(outcome="baseline_error").observe(max(duration_ms / 1000.0, 0.0))
+        _log_event(
+            "ask.baseline_failed",
+            error=str(exc),
+            duration_ms=duration_ms,
+        )
+        logger.warning("Baseline ask measurement failed: %s", exc)
+    else:
+        duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        ASK_LATENCY.labels(outcome="baseline").observe(max(duration_ms / 1000.0, 0.0))
+        _log_event(
+            "ask.baseline_completed",
+            duration_ms=duration_ms,
+        )
+        logger.info("Baseline ask completed in %sms", duration_ms)
+
+
+async def _warm_and_measure() -> None:
+    await _warm_search_index()
+    await _record_query_baseline()
 
 # Custom exceptions
 class RAGError(Exception):
@@ -231,11 +376,12 @@ def generate_safe_filename(original_filename: str) -> str:
 # Database and user service globals
 DB: Optional[Database] = None
 USER_SERVICE: Optional[UserService] = None
+API_KEY_SERVICE: Optional[ApiKeyService] = None
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection on startup (if configured)."""
-    global DB, USER_SERVICE
+    global DB, USER_SERVICE, API_KEY_SERVICE
     
     # Try to initialize database if connection string is provided
     db_url = os.environ.get("DATABASE_URL")
@@ -243,14 +389,20 @@ async def startup_event():
         try:
             DB = await init_database(db_url, init_schema=False)
             USER_SERVICE = get_user_service(DB)
+            API_KEY_SERVICE = ApiKeyService(DB)
+            configure_api_key_auth(API_KEY_SERVICE)
             logger.info("Database initialized successfully")
         except Exception as e:
             logger.warning(f"Failed to initialize database: {e}")
             logger.warning("Server will run without database features")
             DB = None
             USER_SERVICE = None
+            API_KEY_SERVICE = None
+            configure_api_key_auth(None)
     else:
         logger.info("No DATABASE_URL configured - running without database")
+        configure_api_key_auth(None)
+    asyncio.create_task(_warm_and_measure())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -267,6 +419,7 @@ def _count_lines(path):
     except OSError:
         _chunk_count_cache = 0
         _chunk_count_stamp = None
+        CHUNK_COUNT_GAUGE.set(0)
         return 0
 
     if _chunk_count_cache is not None and _chunk_count_stamp == modified:
@@ -280,6 +433,7 @@ def _count_lines(path):
 
     _chunk_count_cache = count
     _chunk_count_stamp = modified
+    CHUNK_COUNT_GAUGE.set(count)
     return count
 
 def is_admin(user: Optional[Dict[str, Any]]) -> bool:
@@ -288,8 +442,10 @@ def is_admin(user: Optional[Dict[str, Any]]) -> bool:
         return False
     return user.get('role') == 'admin'
 
-def require_admin(user: Optional[Dict[str, Any]]):
+def require_admin(user: Optional[Dict[str, Any]], api_key: Optional[APIKeyPrincipal] = None):
     """Raise exception if user is not admin."""
+    if api_key and "admin" in api_key.scopes:
+        return
     if not user:
         raise HTTPException(
             status_code=401,
@@ -499,45 +655,71 @@ async def logout():
 @app.get("/auth/me")
 async def get_me(request: Request):
     """Get current user information."""
-    user = get_current_user(request)
-    if user:
-        return {"authenticated": True, "user": user}
+    user, workspace_id, api_key = await _resolve_auth_context(request, scopes=("read",), require=False)
+    if user or api_key:
+        return {
+            "authenticated": True,
+            "user": user,
+            "workspace_id": workspace_id,
+            "via_api_key": api_key is not None,
+        }
     return {"authenticated": False}
 
 @app.post("/ask")
 @limiter.limit("30/minute")
 async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Please log in to use this feature."
-        )
-    
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("read",),
+        require=True,
+    )
+    user_id = user.get("user_id") if user else None
+
     # Validate input
     try:
         ask_req = AskRequest(query=query, k=k)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-    # Resolve workspace context to enforce multi-tenant isolation during search.
-    workspace_id = await _get_primary_workspace_id_for_user(user)
 
     # Add timeout for query processing
     import asyncio
+    start_time = asyncio.get_event_loop().time()
+    outcome = "success"
     try:
-        with RequestTimer("ask", {"user_id": user.get('user_id'), "workspace_id": workspace_id}):
+        with RequestTimer(
+            "ask",
+            {"user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
+        ):
             result = await asyncio.wait_for(
                 asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user, workspace_id),
                 timeout=30.0  # 30 second timeout
             )
+        _log_event(
+            "ask.completed",
+            user_id=user_id,
+            workspace_id=workspace_id,
+            api_key=bool(api_key_principal),
+            query=ask_req.query[:200],
+            k=ask_req.k,
+            result_count=len(result.get("chunks", [])),
+        )
         return result
     except asyncio.TimeoutError:
+        outcome = "timeout"
         raise HTTPException(
             status_code=504,
             detail="Request timed out. Please try a simpler query or contact support."
         )
+    except HTTPException:
+        outcome = "error"
+        raise
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        duration = asyncio.get_event_loop().time() - start_time
+        ASK_REQUEST_COUNTER.labels(outcome=outcome).inc()
+        ASK_LATENCY.labels(outcome=outcome).observe(duration)
 
 def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
     """Process query synchronously (called from async context)."""
@@ -599,14 +781,13 @@ def validate_youtube_url(url: str) -> bool:
 @app.post("/ingest/urls")
 @limiter.limit("10/hour")
 async def ingest_urls(request: Request, urls: str = Form(...), language: str = Form("en")):
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Please log in to ingest content."
-        )
-    
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    user_id = user.get("user_id") if user else None
+
     # Validate input
     try:
         url_req = IngestURLRequest(urls=urls, language=language)
@@ -617,18 +798,27 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
     results = []
     total = 0
     
-    # Resolve workspace context
-    user_id = user.get('user_id') if user else None
-    workspace_id = await _get_primary_workspace_id_for_user(user)
-    workspace_id = await _get_primary_workspace_id_for_user(user)
-    
     for url in urls_list:
         # Validate YouTube URL format
         if not validate_youtube_url(url):
             results.append({"url": url, "error": "Invalid YouTube URL format", "written": 0})
+            _log_event(
+                "ingest.youtube.skipped",
+                url=url,
+                reason="invalid_format",
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            INGEST_COUNTER.labels(source="youtube", outcome="skipped").inc()
             continue
+        start_time = time.perf_counter()
+        primary_outcome = "success"
         try:
-            with RequestTimer("ingest_youtube", {"url": url, "user_id": user_id, "workspace_id": workspace_id}):
+            with RequestTimer(
+                "ingest_youtube",
+                {"url": url, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
+            ):
                 r = ingest_youtube(
                     url,
                     out_jsonl=CHUNKS_PATH,
@@ -641,13 +831,46 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 error_msg = r.get("stderr", "Unknown error")
                 logger.warning(f"YouTube ingestion failed for {url}: {error_msg}")
                 results.append({"url": url, "written": 0, "mode": "transcript", "error": error_msg})
+                _log_event(
+                    "ingest.youtube.failed",
+                    url=url,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    api_key=bool(api_key_principal),
+                    error=error_msg,
+                    stage="primary",
+                )
+                INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
+                primary_outcome = "failure"
             else:
                 results.append({"url": url, "written": written, "mode": "transcript"})
+                _log_event(
+                    "ingest.youtube.completed",
+                    url=url,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    api_key=bool(api_key_principal),
+                    written=written,
+                    language=url_req.language,
+                    mode="transcript",
+                )
+                INGEST_COUNTER.labels(source="youtube", outcome="success").inc()
             total += written
         except Exception as e:
             logger.error(f"Error ingesting YouTube URL {url}: {e}", exc_info=True)
+            _log_event(
+                "ingest.youtube.failed",
+                url=url,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+                error=str(e),
+                stage="primary_exception",
+            )
+            INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
             # fallback: fetch auto-captions via yt-dlp, then ingest .vtt
             vid = ""
+            primary_outcome = "failure"
             try:
                 vid = subprocess.check_output(
                     ["yt-dlp", "--print", "id", "--skip-download", url],
@@ -684,19 +907,59 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 logger.warning(f"yt-dlp download failed for {url}: {e}")
                 vtt = ""
             if vtt:
-                with RequestTimer("ingest_transcript_retry", {"file": vtt, "user_id": user_id, "workspace_id": workspace_id}):
-                    r = ingest_transcript(
-                        vtt,
-                        out_jsonl=CHUNKS_PATH,
-                        language=url_req.language,
-                        user_id=user_id,
-                        workspace_id=workspace_id
-                    )
+                fallback_start = time.perf_counter()
+                fallback_outcome = "success"
+                try:
+                    with RequestTimer(
+                        "ingest_transcript_retry",
+                        {"file": vtt, "user_id": user_id, "workspace_id": workspace_id},
+                    ):
+                        r = ingest_transcript(
+                            vtt,
+                            out_jsonl=CHUNKS_PATH,
+                            language=url_req.language,
+                            user_id=user_id,
+                            workspace_id=workspace_id
+                        )
+                except Exception:
+                    fallback_outcome = "failure"
+                    raise
+                finally:
+                    INGEST_LATENCY.labels(
+                        source="youtube",
+                        outcome=fallback_outcome,
+                    ).observe(max(time.perf_counter() - fallback_start, 0.0))
                 results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
+                _log_event(
+                    "ingest.youtube.completed",
+                    url=url,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    api_key=bool(api_key_principal),
+                    written=r.get("written", 0),
+                    language=url_req.language,
+                    mode="auto_captions",
+                )
+                INGEST_COUNTER.labels(source="youtube", outcome="success").inc()
                 total += r.get("written",0)
             else:
                 error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
                 results.append({"url": url, "error": error_msg, "written": 0})
+                _log_event(
+                    "ingest.youtube.failed",
+                    url=url,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    api_key=bool(api_key_principal),
+                    error=error_msg,
+                    stage="fallback_unavailable",
+                )
+                INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
+        finally:
+            INGEST_LATENCY.labels(
+                source="youtube",
+                outcome=primary_outcome,
+            ).observe(max(time.perf_counter() - start_time, 0.0))
     global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
     _chunk_count_stamp = None
@@ -708,27 +971,17 @@ api_v1.post("/ingest/urls")(ingest_urls)
 @app.post("/ingest/files")
 @limiter.limit("10/hour")
 async def ingest_files(request: Request, files: List[UploadFile] = File(...), language: str = Form("en")):
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Please log in to ingest content."
-        )
-    
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    user_id = user.get("user_id") if user else None
+
     UPLOAD_DIR.mkdir(exist_ok=True)
     results = []
     total = 0
     
-    workspace_id = None
-    user_id = user.get('user_id') if user else None
-    if USER_SERVICE and user_id:
-        try:
-            primary_workspace = await USER_SERVICE.get_primary_workspace(user_id)
-            workspace_id = primary_workspace.get("id") if primary_workspace else None
-        except Exception as exc:
-            logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
-
     for f in files:
         # Validate file type
         if not validate_file_type(f.filename):
@@ -736,6 +989,15 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 "file": f.filename,
                 "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
             })
+            _log_event(
+                "ingest.file.skipped",
+                file=f.filename,
+                reason="unsupported_type",
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            INGEST_COUNTER.labels(source="file", outcome="skipped").inc()
             continue
         
         # Generate safe filename
@@ -756,10 +1018,32 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                         "file": f.filename,
                         "error": f"File exceeds maximum size of {MAX_FILE_SIZE // (1024*1024)}MB"
                     })
+                    _log_event(
+                        "ingest.file.failed",
+                        file=f.filename,
+                        safe_name=safe_name,
+                        reason="size_limit",
+                        size=size,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        api_key=bool(api_key_principal),
+                    )
+                    INGEST_COUNTER.labels(source="file", outcome="failure").inc()
                     break
                 content += chunk
         except Exception as e:
             results.append({"file": f.filename, "error": f"Failed to read file: {str(e)}"})
+            _log_event(
+                "ingest.file.failed",
+                file=f.filename,
+                safe_name=safe_name,
+                reason="read_error",
+                error=str(e),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            INGEST_COUNTER.labels(source="file", outcome="failure").inc()
             continue
         
         if size > MAX_FILE_SIZE:
@@ -771,13 +1055,32 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 out.write(content)
         except Exception as e:
             results.append({"file": f.filename, "error": f"Failed to save file: {str(e)}"})
+            _log_event(
+                "ingest.file.failed",
+                file=f.filename,
+                safe_name=safe_name,
+                reason="save_error",
+                error=str(e),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            INGEST_COUNTER.labels(source="file", outcome="failure").inc()
             continue
         
         # Process file
         lower = safe_name.lower()
+        handler = "unknown"
+        processing_start = time.perf_counter()
+        processing_outcome = "success"
+        r: Dict[str, Any] = {}
         try:
-            with RequestTimer("ingest_file", {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id}):
+            with RequestTimer(
+                "ingest_file",
+                {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
+            ):
                 if lower.endswith((".vtt", ".srt", ".txt")):
+                    handler = "transcript"
                     r = ingest_transcript(
                         str(path),
                         out_jsonl=CHUNKS_PATH,
@@ -786,6 +1089,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                         workspace_id=workspace_id
                     )
                 elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
+                    handler = "docs"
                     r = ingest_docs(
                         str(path),
                         out_jsonl=CHUNKS_PATH,
@@ -797,9 +1101,35 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                     r = {"error": "unsupported file type"}
         except Exception as e:
             r = {"error": str(e)}
+            processing_outcome = "failure"
+        else:
+            if r.get("error"):
+                processing_outcome = "failure"
+        finally:
+            INGEST_LATENCY.labels(
+                source="file",
+                outcome=processing_outcome,
+            ).observe(max(time.perf_counter() - processing_start, 0.0))
         
         results.append({"file": f.filename, "safe_name": safe_name, **r})
         total += int(r.get("written", 0) or 0)
+        status = "failed" if r.get("error") else "completed"
+        _log_event(
+            f"ingest.file.{status}",
+            file=f.filename,
+            safe_name=safe_name,
+            handler=handler,
+            written=int(r.get("written", 0) or 0),
+            language=language,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            api_key=bool(api_key_principal),
+            error=r.get("error"),
+        )
+        INGEST_COUNTER.labels(
+            source="file",
+            outcome="failure" if r.get("error") else "success",
+        ).inc()
     
     global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
@@ -810,15 +1140,16 @@ api_v1.post("/ingest/files")(ingest_files)
 
 @app.post("/api/dedupe")
 @app.post("/dedupe")
-def dedupe(request: Request):
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required."
-        )
-    
+async def dedupe(request: Request):
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    # API key already validated; JWT path ensures user exists.
+    if not user and not api_key_principal:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
     inp = CHUNKS_PATH
     tmp = CHUNKS_PATH + ".tmp"
     seen = set()
@@ -865,10 +1196,14 @@ api_v1.post("/dedupe")(dedupe)
 async def get_sources(request: Request):
     """List all unique sources with metadata (filtered by user)."""
     ensure_index()
-    # Get current user for filtering
-    user = get_current_user(request)
-    user_id = user.get('user_id') if user else None
-    workspace_id = await _get_primary_workspace_id_for_user(user)
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("read",),
+        require=False,
+    )
+    user_id = user.get("user_id") if user else None
+    if api_key_principal and user_id is None:
+        user_id = api_key_principal.user_id
     sources = get_unique_sources(CHUNKS, user_id=user_id, workspace_id=workspace_id)
     return {"sources": sources, "count": len(sources)}
 api_v1.get("/sources")(get_sources)
@@ -877,10 +1212,14 @@ api_v1.get("/sources")(get_sources)
 async def get_source_chunks(request: Request, source_id: str):
     """Get all chunks for a specific source (filtered by user)."""
     ensure_index()
-    # Get current user for filtering
-    user = get_current_user(request)
-    user_id = user.get('user_id') if user else None
-    workspace_id = await _get_primary_workspace_id_for_user(user)
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("read",),
+        require=False,
+    )
+    user_id = user.get("user_id") if user else None
+    if api_key_principal and user_id is None:
+        user_id = api_key_principal.user_id
     chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
     return {"chunks": chunks, "count": len(chunks)}
 api_v1.get("/sources/{source_id}/chunks")(get_source_chunks)
@@ -888,16 +1227,16 @@ api_v1.get("/sources/{source_id}/chunks")(get_source_chunks)
 @app.delete("/api/sources/{source_id}")
 async def delete_source(request: Request, source_id: str):
     """Delete a source and all its chunks."""
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required."
-        )
-    
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    user_id = user.get("user_id") if user else None
+    if api_key_principal and user_id is None:
+        user_id = api_key_principal.user_id
+
     global INDEX, CHUNKS
-    workspace_id = await _get_primary_workspace_id_for_user(user)
     result = delete_source_chunks(CHUNKS_PATH, source_id, workspace_id=workspace_id)
     INDEX = None
     CHUNKS = []
@@ -911,10 +1250,14 @@ api_v1.delete("/sources/{source_id}")(delete_source)
 async def get_source_preview(request: Request, source_id: str, limit: int = 3):
     """Get preview of a source (first few chunks, filtered by user)."""
     ensure_index()
-    # Get current user for filtering
-    user = get_current_user(request)
-    user_id = user.get('user_id') if user else None
-    workspace_id = await _get_primary_workspace_id_for_user(user)
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("read",),
+        require=False,
+    )
+    user_id = user.get("user_id") if user else None
+    if api_key_principal and user_id is None:
+        user_id = api_key_principal.user_id
     chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
     preview = chunks[:limit]
     return {"preview": preview, "total_chunks": len(chunks)}
@@ -924,10 +1267,14 @@ api_v1.get("/sources/{source_id}/preview")(get_source_preview)
 async def search_source(request: Request, query: str, source_id: str = None, k: int = 8):
     """Search within all chunks or a specific source (filtered by user)."""
     ensure_index()
-    # Get current user for filtering
-    user = get_current_user(request)
-    user_id = user.get('user_id') if user else None
-    workspace_id = await _get_primary_workspace_id_for_user(user)
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("read",),
+        require=False,
+    )
+    user_id = user.get("user_id") if user else None
+    if api_key_principal and user_id is None:
+        user_id = api_key_principal.user_id
     
     if source_id:
         source_chunks = get_chunks_by_source(CHUNKS, source_id, user_id=user_id, workspace_id=workspace_id)
@@ -952,16 +1299,10 @@ api_v1.get("/search")(search_source)
 
 @app.post("/api/rebuild")
 @app.post("/rebuild")
-def rebuild_index(request: Request):
+async def rebuild_index(request: Request):
     """Rebuild the search index."""
-    # Require authentication
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required."
-        )
-    
+    await _resolve_auth_context(request, scopes=("write",), require=True)
+
     global INDEX, CHUNKS
     INDEX = None
     CHUNKS = []
@@ -973,8 +1314,12 @@ api_v1.post("/rebuild")(rebuild_index)
 @app.get("/api/admin/users")
 async def list_users(request: Request):
     """List all users (admin only)."""
-    user = get_current_user(request)
-    require_admin(user)
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("admin",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
     
     if not USER_SERVICE:
         raise HTTPException(
@@ -989,8 +1334,12 @@ api_v1.get("/admin/users")(list_users)
 @app.patch("/api/admin/users/{user_id}/role")
 async def update_user_role(request: Request, user_id: str, role: str = Form(...)):
     """Update a user's role (admin only)."""
-    user = get_current_user(request)
-    require_admin(user)
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("admin",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
     
     if not USER_SERVICE:
         raise HTTPException(
@@ -1014,11 +1363,15 @@ async def update_user_role(request: Request, user_id: str, role: str = Form(...)
 api_v1.patch("/admin/users/{user_id}/role")(update_user_role)
 
 @app.get("/api/admin/stats")
-def admin_stats(request: Request):
+async def admin_stats(request: Request):
     """Get system-wide statistics (admin only)."""
-    user = get_current_user(request)
-    require_admin(user)
-    
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("admin",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
+
     ensure_index()
     
     # Count chunks by user

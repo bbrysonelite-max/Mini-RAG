@@ -73,6 +73,10 @@
 - Chunk writes use copy-on-write staging + `os.replace`, so ingestion either keeps the old file or atomically swaps in the fully-written version.
 - Keep older snapshots for audits and prune with a retention policy (for example, `find backups -type f -mtime +7 -delete`).
 - CLI ingest commands (`ingest-docs`, `ingest-transcript`, `ingest-youtube`) accept optional `--user-id` and `--workspace-id` flags so you can tag chunks from Terminal. Example: `./venv/bin/python raglite.py ingest-docs --path ./notes/intro.md --out out/chunks.jsonl --user-id $(uuidgen) --workspace-id default-workspace` (use `Cmd` + `Shift` + `.` in Finder to reveal hidden folders before copying paths).
+- **API key issuance:** Admins can mint keys via `./venv/bin/python scripts/manage_api_keys.py create --user <uuid> [--workspace <uuid>] [--scope read --scope write]`. The command prints the plaintext **once**—store it immediately. List keys with `list` and revoke via `revoke --id <key_uuid>`.
+- **API key authentication:** Clients can send `X-API-Key: <token>` (or `Authorization: ApiKey <token>`) when calling `/api/v1/*`. Scopes are enforced (`read`, `write`, `admin`) so ingest/delete/rebuild require `write` and admin endpoints require `admin`.
+- **API key dependency:** FastAPI routes can depend on `APIKeyAuth` to guarantee scope checks. Example: `@router.post("/ingest", dependencies=[Depends(APIKeyAuth(("write",)))])` or inject directly: `async def ingest(principal: APIKeyPrincipal = Depends(APIKeyAuth(("write",))))`.
+- **Metrics:** `/metrics` exposes `ask_requests_total`, `ask_request_latency_seconds` (including a startup `baseline` sample), `ingest_operations_total{source, outcome}`, `ingest_operation_latency_seconds{source, outcome}`, and `chunk_records_total` so dashboards can chart query volume, tail latencies, ingest throughput/failures, and index readiness in real time.
 
 ### Usability
 - [ ] User-friendly error messages
@@ -93,7 +97,8 @@
 - [ ] Monitoring & logging
 - [ ] Analytics
 
-- `/api/v1` REST endpoints now mirror existing `/api/*` routes; JWT auth required today with API keys planned.
+- `/api/v1` REST endpoints now mirror existing `/api/*` routes; authenticate with JWT cookies or API keys.
+- API key storage uses hashed records in the new `api_keys` table with per-key scopes and revocation timestamps; use the manage script above for operations.
 
 ### Infrastructure
 - [ ] Database (PostgreSQL)
