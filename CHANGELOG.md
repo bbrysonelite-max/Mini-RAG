@@ -39,5 +39,7 @@
 - Warmed the search index on startup so the first `/ask` request avoids cold IO, emitting `index.warm_completed` / `index.warm_failed` breadcrumbs for operations visibility.
 - Captured a startup `/ask` baseline sample, recording `ask_request_latency_seconds{outcome="baseline"}` and `ask.baseline_*` events for the performance dashboards.
 - Exposed `chunk_records_total` gauge so the UI can track index readiness and current chunk volume.
+- Refreshed `docs/guides/QUICK_REFERENCE.md` checklist to reflect delivered security/robustness work and highlight remaining Phase 4/5 gaps.
+- Added CORS configuration (env-driven) plus security header middleware (CSP, HSTS, nosniff, etc.) and documented the new settings in the quick reference.
 
 

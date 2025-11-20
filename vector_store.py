@@ -217,7 +217,7 @@ class VectorStore:
             except Exception as exc:
                 logger.error(f"Failed to ensure chunk {chunk_id}: {exc}")
                 continue
-
+    
     async def insert_embedding(
         self,
         chunk_id: str,

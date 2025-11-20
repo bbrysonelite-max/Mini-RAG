@@ -13,57 +13,36 @@
 
 ## ✅ Quick Wins (Easy Improvements)
 
-1. **Add File Size Limits** (30 min)
-   ```python
-   MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
-   ```
-
-2. **Sanitize Filenames** (1 hour)
-   ```python
-   import os
-   safe_name = os.path.basename(filename).replace('/', '').replace('\\', '')
-   ```
-
-3. **Add Request Timeouts** (1 hour)
-   ```python
-   @app.post("/ask")
-   async def ask(...):
-       result = await asyncio.wait_for(process_query(...), timeout=30.0)
-   ```
-
-4. **Better Error Messages** (2 hours)
-   - Replace technical errors with user-friendly messages
-   - Log details server-side
-
-5. **Add Health Check** (30 min)
-   ```python
-   @app.get("/health")
-   def health():
-       return {"status": "healthy", "index": "loaded"}
-   ```
+| Task | Status | Notes |
+|------|--------|-------|
+| Add file size limits | ✅ | `MAX_FILE_SIZE` enforced across ingest endpoints |
+| Sanitize filenames | ✅ | `generate_safe_filename` + path stripping live |
+| Add request timeouts | ✅ | `/ask` guarded by `asyncio.wait_for(timeout=30.0)` |
+| Improve error messages | ✅ | Custom exception handler returns safe responses; full trace logged |
+| Add health check | ✅ | `/health` reports index + DB status |
 
 ## 📋 Checklist for Commercial Readiness
 
 ### Security
-- [ ] Authentication & Authorization (JWT/OAuth)
-- [ ] Input validation (Pydantic models)
-- [ ] File upload security (sanitization, size limits)
-- [ ] URL validation (prevent command injection)
-- [ ] Rate limiting
-- [ ] CORS configuration
-- [ ] XSS prevention (HTML escaping)
-- [ ] Error message sanitization
-- [ ] Security headers (CSP, HSTS)
+- [x] Authentication & Authorization (JWT/OAuth + API keys)
+- [x] Input validation (Pydantic models on ingest/query payloads)
+- [x] File upload security (sanitization, size limits, hashing)
+- [x] URL validation (YouTube extractor + strict patterns)
+- [x] Rate limiting (SlowAPI guards across write/read endpoints)
+- [x] CORS configuration (`CORS_ALLOW_ORIGINS` env with sane defaults)
+- [x] XSS prevention (CSP + sanitized JSON error payloads)
+- [x] Error message sanitization (custom handlers, structured logging)
+- [x] Security headers (CSP, HSTS, X-Content-Type-Options, etc.)
 
 ### Robustness
-- [ ] Comprehensive error handling
-- [ ] Request timeouts
-- [ ] File size limits
-- [ ] Thread-safe operations
-- [ ] Backup system
-- [ ] Recovery mechanisms
-- [ ] Resource limits
-- [ ] Graceful degradation
+- [x] Comprehensive error handling (domain-specific + fallback handlers)
+- [x] Request timeouts (query + ingest timers)
+- [x] File size limits
+- [ ] Thread-safe operations (review DB + file locks)
+- [x] Backup system (automatic snapshots + restore CLI)
+- [x] Recovery mechanisms (copy-on-write & restore helper)
+- [ ] Resource limits (CPU/memory quotas, concurrency caps)
+- [ ] Graceful degradation (non-critical services fallback)
 
 #### Backup Recovery Playbook
 - All chunk mutations (CLI ingest, `/api/ingest_files`, `/api/dedupe`, `/api/sources/{id}` deletes) snapshot the live file to `backups/`.
@@ -77,6 +56,7 @@
 - **API key authentication:** Clients can send `X-API-Key: <token>` (or `Authorization: ApiKey <token>`) when calling `/api/v1/*`. Scopes are enforced (`read`, `write`, `admin`) so ingest/delete/rebuild require `write` and admin endpoints require `admin`.
 - **API key dependency:** FastAPI routes can depend on `APIKeyAuth` to guarantee scope checks. Example: `@router.post("/ingest", dependencies=[Depends(APIKeyAuth(("write",)))])` or inject directly: `async def ingest(principal: APIKeyPrincipal = Depends(APIKeyAuth(("write",))))`.
 - **Metrics:** `/metrics` exposes `ask_requests_total`, `ask_request_latency_seconds` (including a startup `baseline` sample), `ingest_operations_total{source, outcome}`, `ingest_operation_latency_seconds{source, outcome}`, and `chunk_records_total` so dashboards can chart query volume, tail latencies, ingest throughput/failures, and index readiness in real time.
+- **Security headers & CORS:** `CORS_ALLOW_ORIGINS` controls allowed origins (default `*`); `CONTENT_SECURITY_POLICY` overrides the default CSP. Middleware enforces HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and XSS protection headers.
 
 ### Usability
 - [ ] User-friendly error messages
@@ -92,9 +72,9 @@
 - [ ] User management
 - [ ] Usage quotas
 - [ ] Billing integration
-- [ ] API versioning
+- [x] API versioning (`/api/v1` router live)
 - [ ] API documentation
-- [ ] Monitoring & logging
+- [x] Monitoring & logging (Prometheus metrics, structured logs, baselines)
 - [ ] Analytics
 
 - `/api/v1` REST endpoints now mirror existing `/api/*` routes; authenticate with JWT cookies or API keys.

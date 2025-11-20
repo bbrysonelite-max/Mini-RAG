@@ -172,10 +172,10 @@ class RAGPipeline:
             return {"error": "No chunks loaded"}
         
         logger.info(f"Building vector index for {len(self.chunks)} chunks (pgvector={self.use_pgvector})...")
-
+        
         embedded_count = 0
         error_count = 0
-
+        
         if self.use_pgvector and self.vector_store_db:
             self.db_context = await self.vector_store_db.ensure_default_context()
 
@@ -190,35 +190,35 @@ class RAGPipeline:
                 for db_id, chunk_data in zip(db_batch_ids, batch_chunks):
                     if db_id:
                         self.db_chunk_map[db_id] = chunk_data
-
-                try:
-                    result = await self.model_service.embed({"texts": batch_texts})
+            
+            try:
+                result = await self.model_service.embed({"texts": batch_texts})
                     vectors = result.get("vectors", [])
-
-                    if self.use_pgvector and self.vector_store_db:
+                
+                if self.use_pgvector and self.vector_store_db:
                         if self.db_context:
                             await self.vector_store_db.ensure_chunks(list(zip(db_batch_ids, batch_chunks)), self.db_context)
-                        embeddings_batch = [
-                            (chunk_id, vector, model_id)
+                    embeddings_batch = [
+                        (chunk_id, vector, model_id)
                             for chunk_id, vector in zip(db_batch_ids, vectors)
-                            if chunk_id and vector
-                        ]
-
-                        insert_result = await self.vector_store_db.insert_embeddings_batch(embeddings_batch)
-                        embedded_count += insert_result.get('inserted', 0)
-                        error_count += insert_result.get('errors', 0)
-                    else:
+                        if chunk_id and vector
+                    ]
+                    
+                    insert_result = await self.vector_store_db.insert_embeddings_batch(embeddings_batch)
+                    embedded_count += insert_result.get('inserted', 0)
+                    error_count += insert_result.get('errors', 0)
+                else:
                         for chunk_id, vector in zip(db_batch_ids, vectors):
-                            if chunk_id and vector:
-                                self.vector_store_memory[chunk_id] = vector
-                                embedded_count += 1
-
+                        if chunk_id and vector:
+                            self.vector_store_memory[chunk_id] = vector
+                            embedded_count += 1
+                
                     logger.info(
                         "Embedded batch",
                         extra={"batch": batch_index + 1, "vectors": len(vectors), "storage": "pgvector" if self.use_pgvector else "memory"}
                     )
-
-                except Exception as e:
+                
+            except Exception as e:
                     logger.error(f"Error embedding batch {batch_index + 1}: {e}")
                     error_count += len(batch_chunks)
 
@@ -231,10 +231,10 @@ class RAGPipeline:
 
         if self._embedding_tasks:
             await asyncio.gather(*self._embedding_tasks)
-
+        
         storage_type = "pgvector" if self.use_pgvector else "memory"
         logger.info(f"Vector index built ({storage_type}): {embedded_count} chunks embedded, {error_count} errors")
-
+        
         return {
             "chunks_embedded": embedded_count,
             "errors": error_count,
@@ -445,7 +445,7 @@ class RAGPipeline:
                     if project_tag not in tags:
                         tags.append(project_tag)
                 chunk['tags'] = tags
- 
+                
                 candidates.append(ChunkWithScore(
                     chunk=chunk,
                     score=float(result['similarity']),

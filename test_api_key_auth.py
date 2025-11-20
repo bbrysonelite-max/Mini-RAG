@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from api_key_auth import APIKeyAuth, APIKeyPrincipal, configure_api_key_auth, get_api_key_principal
+import server
 
 
 class FakeApiKeyService:
@@ -197,6 +198,54 @@ async def test_api_key_auth_dependency_optional_allows_missing_key():
     principal = await dependency(request)
 
     assert principal is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_auth_context_prefers_api_key(monkeypatch):
+    api_principal = APIKeyPrincipal(
+        key_id="key-ctx",
+        user_id="api-user",
+        workspace_id="api-workspace",
+        scopes=("read",),
+    )
+
+    async def fake_get_api_key_principal(request, scopes=("read",), required=False):
+        return api_principal
+
+    class FakeUserService:
+        async def get_user_by_id(self, user_id: str):
+            return {"user_id": user_id, "role": "reader"}
+
+    monkeypatch.setattr(server, "get_api_key_principal", fake_get_api_key_principal)
+    monkeypatch.setattr(server, "USER_SERVICE", FakeUserService())
+
+    user, workspace_id, principal = await server._resolve_auth_context(build_request({}), scopes=("read",))
+
+    assert principal is api_principal
+    assert user["user_id"] == "api-user"
+    assert workspace_id == "api-workspace"
+
+
+@pytest.mark.asyncio
+async def test_resolve_auth_context_falls_back_to_jwt(monkeypatch):
+    async def fake_get_api_key_principal(request, scopes=("read",), required=False):
+        return None
+
+    def fake_get_current_user(request):
+        return {"user_id": "jwt-user", "role": "admin"}
+
+    async def fake_primary_workspace(user):
+        return "jwt-workspace"
+
+    monkeypatch.setattr(server, "get_api_key_principal", fake_get_api_key_principal)
+    monkeypatch.setattr(server, "get_current_user", fake_get_current_user)
+    monkeypatch.setattr(server, "_get_primary_workspace_id_for_user", fake_primary_workspace)
+
+    user, workspace_id, principal = await server._resolve_auth_context(build_request({}), scopes=("read",))
+
+    assert principal is None
+    assert user["user_id"] == "jwt-user"
+    assert workspace_id == "jwt-workspace"
 
 
 @pytest.fixture(autouse=True)

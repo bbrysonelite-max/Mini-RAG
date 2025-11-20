@@ -40,17 +40,18 @@ a:hover{color:#333}
 </head>
 <body>
 <h1>RAG Desk</h1>
-<nav>
-  <div id="tabAsk" class="tab active">Ask</div>
-  <div id="tabBrowser" class="tab">Browser</div>
-  <div id="tabIngest" class="tab">Ingest</div>
-  <div style="margin-left:auto;display:flex;align-items:center;gap:0.5rem">
-    <div id="userInfo" style="display:none;font-size:0.9em">
-      <span id="userName" class="small"></span>
-      <button id="logoutBtn" class="btn" style="padding:0.4rem 0.8rem;font-size:0.9em">Logout</button>
-    </div>
-    <button id="loginBtn" class="btn" style="padding:0.4rem 0.8rem;font-size:0.9em">Sign in with Google</button>
+<nav style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem">
+  <div style="display:flex;align-items:center;gap:0.75rem">
+    <span style="font-size:1.4rem;font-weight:600">Mini-RAG</span>
+    <a href="#ask" style="color:#0070f3;text-decoration:none">Ask</a>
+    <a href="#browser" style="color:#0070f3;text-decoration:none">Sources</a>
+    <a href="#ingest" style="color:#0070f3;text-decoration:none">Ingest</a>
   </div>
+  <div id="userInfo" style="display:none;align-items:center;gap:0.75rem">
+    <div style="font-size:0.95rem" id="userName"></div>
+    <button id="logoutBtn" class="btn" style="background:#c33">Log out</button>
+  </div>
+  <button id="loginBtn" class="btn">Sign in with Google</button>
 </nav>
 
 <section id="ask" class="active">
@@ -495,7 +496,7 @@ async function viewSource(id){
       <div style="background:white;max-width:800px;margin:0 auto;padding:2rem;border-radius:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
           <h2>Document Viewer</h2>
-          <button onclick="this.closest('div[style*=\"position:fixed\"]').remove()" class="btn">Close</button>
+          <button onclick="(function(btn){ const overlay = btn.closest('div[style*=\"position:fixed\"]'); if(overlay){ overlay.remove(); const list = document.getElementById('sourcesList'); if(list){ list.scrollIntoView({behavior:'smooth'}); list.focus?.(); }}})(this)" class="btn">Close</button>
         </div>
         <div style="max-height:70vh;overflow:auto">
           ${chunks.map((c,idx) => `
@@ -567,18 +568,11 @@ function setupAuthHandlers(){
       window.location.href = "/auth/google";
     };
   }
-
   const logoutBtn = $("logoutBtn");
   if(logoutBtn){
-    logoutBtn.onclick = async() => {
-      try{
-        await fetch("/auth/logout");
-        currentUser = null;
-        checkAuth();
-      }catch(e){
-        console.error("Logout failed:", e);
-        checkAuth();
-      }
+    logoutBtn.onclick = async () => {
+      await fetch("/auth/logout");
+      window.location.reload();
     };
   }
 }

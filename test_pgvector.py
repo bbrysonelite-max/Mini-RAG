@@ -83,7 +83,7 @@ async def test_vector_store_operations():
         
         db = await init_database()
         vector_store = VectorStore(db)
-
+        
         # Ensure prerequisite records exist for chunk foreign keys
         owner = await db.fetch_one("SELECT id FROM users LIMIT 1")
         new_owner = False
@@ -233,7 +233,7 @@ async def test_vector_store_operations():
         await db.execute("DELETE FROM organizations WHERE id = $1", (org_id,))
         if new_owner:
             await db.execute("DELETE FROM users WHERE id = $1", (owner_id,))
- 
+        
         return True
     
     except Exception as e:

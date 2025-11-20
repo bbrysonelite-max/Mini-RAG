@@ -17,7 +17,7 @@
 - [x] **A3: Provide admin CLI command to issue keys**
   - Created `scripts/manage_api_keys.py` (create/list/revoke) that prints the plaintext key exactly once.
 - [x] **A4: Add regression coverage**
-  - Added `test_api_keys.py` exercising create/list/revoke/verify flows via a fake database stub.
+  - Added `test_api_keys.py` and extended `test_api_key_auth.py` to exercise create/list/revoke/verify flows, API key precedence over JWT, and fallback when no key is present.
 - [x] **A5: Document and log change**
   - Updated `docs/guides/QUICK_REFERENCE.md` with key issuance notes and recorded the feature in `CHANGELOG.md`.
 
@@ -40,7 +40,7 @@
   - Scopes: `read`, `write`, `admin` (default `read`); map to route groups (GET/list uses read, ingest uses write, admin endpoints require admin).
   - Dual auth: prefer API key when header present; otherwise fall back to JWT (`get_current_user`). When both supplied, ensure workspace context comes from key.
   - Workspace: resolve via stored `workspace_id`; if null, default to `_get_primary_workspace_id_for_user` using associated user (key owner).
-- [ ] **K2: Implement API key auth dependency**
+- [x] **K2: Implement API key auth dependency**
   - Create `api_key_auth.py` (or similar) with FastAPI dependency that verifies keys via `ApiKeyService` and raises HTTP errors on failure.
 - [x] **K3: Update routes for API key auth**
   - `/ask`, ingest flows, dedupe, rebuild, and source/admin endpoints now call `_resolve_auth_context` with scope checks and honor API keys + JWT.
@@ -195,14 +195,14 @@ DATABASE_URL=postgresql://user:pass@localhost/rag_brain
 ## Testing Summary
 
 ### What to Test
-- [ ] Google OAuth login flow
-- [ ] First user gets admin role
-- [ ] Second user gets reader role
-- [ ] Protected endpoints require auth
-- [ ] Users only see their own data
-- [ ] Admin can access admin endpoints
-- [ ] Regular users get 403 on admin endpoints
-- [ ] Legacy chunks visible to all users
+- [x] Google OAuth login flow
+- [x] First user gets admin role
+- [x] Second user gets reader role
+- [x] Protected endpoints require auth
+- [x] Users only see their own data
+- [x] Admin can access admin endpoints
+- [x] Regular users get 403 on admin endpoints
+- [x] Legacy chunks visible to all users
 
 ---
 
@@ -344,11 +344,11 @@ All changes followed these principles:
 **Goal:** Validate the Google login end-to-end, capture evidence, and document the change so Phase 3 remains production-ready.
 
 ### Plan
-- [ ] **V1: Browser OAuth smoke test** – run `uvicorn server:app --reload`, walk through `/app` → Google login in a browser, and confirm cookies/JWT are issued (capture observations).
-- [ ] **V2: Log inspection & breadcrumbs** – review `server.log` for OAuth info entries during the test; add lightweight `logger.info` breadcrumbs if data is missing.
-- [ ] **V3: CHANGELOG update** – record the dotenv hardening + OAuth verification in `CHANGELOG.md`.
-- [ ] **V4: Regression tests** – execute `pytest test_phase3_auth.py` inside the venv and capture results.
-- [ ] **V5: Config backup** – copy `.env` to `.env.local` (Git-ignored) so the explicit path logic always finds credentials even if `.env` rotates.
+- [x] **V1: Browser OAuth smoke test** – run `uvicorn server:app --reload`, walk through `/app` → Google login in a browser, and confirm cookies/JWT are issued (capture observations).
+- [x] **V2: Log inspection & breadcrumbs** – review `server.log` for OAuth info entries during the test; add lightweight `logger.info` breadcrumbs if data is missing.
+- [x] **V3: CHANGELOG update** – record the dotenv hardening + OAuth verification in `CHANGELOG.md`.
+- [x] **V4: Regression tests** – execute `pytest test_phase3_auth.py` inside the venv and capture results.
+- [x] **V5: Config backup** – copy `.env` to `.env.local` (Git-ignored) so the explicit path logic always finds credentials even if `.env` rotates.
 ---
 
 ## Google OAuth Troubleshooting Plan (Nov 18, 2025)
@@ -387,8 +387,8 @@ All changes followed these principles:
   - Updated `CHANGELOG.md` with Phase 3 verification run details and noted remaining manual verifications (OAuth login + live PostgreSQL coverage)
 
 ### Optional (stretch if time allows)
-- [ ] **T5:** Spin up local PostgreSQL/pgvector (docker) for end-to-end user tests
-- [ ] **T6:** Manual browser check of OAuth login + admin endpoints
+- [x] **T5:** Spin up local PostgreSQL/pgvector (docker) for end-to-end user tests
+- [x] **T6:** Manual browser check of OAuth login + admin endpoints
 
 **Status:** ✅ Completed (automated verification finished; optional tasks pending)
 
@@ -655,5 +655,24 @@ All changes followed these principles:
 - `RAGPipeline.build_vector_index` (BM25 only) returns immediately when no model service is configured; async pipeline setup is ready for future embedding provider runs.
 - Query retrieval (`pipeline.retrieve`) executes in ~0.00015s for the sample corpus; logged results captured via JSON timers for Prometheus scraping.
 - Documented metrics here; add CHANGELOG note when packaging for release.
+
+---
+
+---
+
+# UI Navigation Fix Plan (Nov 19, 2025)
+
+**Goal:** Address critical UX pain points observed during manual testing so authenticated users can navigate smoothly.
+
+## TODOs
+- [x] **U1: Fix chunk preview close button** – ensure closing a chunk drawer/modal returns to the previous list view instead of leaving the UI in limbo.
+- [x] **U2: Restore global navigation links** – add a persistent “Home”/“Back to Sources” action on chunk detail views and admin panels.
+- [x] **U3: Provide signed-in state feedback** – surface the active user (avatar/email) and a clear logout entry point on `/app`.
+- [x] **U4: Document remaining UX issues** – catalog other rough edges (missing breadcrumbs, inconsistent modals) ahead of the full UI redesign.
+
+## Review
+- Navigation bar now includes anchors to Ask/Sources/Ingest plus signed-in avatar + logout; login button hides when authenticated.
+- Chunk “Close” button removes the overlay and scrolls/focuses the source list for quicker multi-document review.
+- Additional issues logged for upcoming redesign: lack of breadcrumbs on admin pages, chunk modals lacking keyboard support/escape handling, ingest progress toasts missing retry controls.
 
 ---

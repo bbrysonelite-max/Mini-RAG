@@ -123,7 +123,7 @@ class Database:
         if not query or "$" not in query:
             return query
         return re.sub(r"\$(\d+)", "%s", query)
-
+    
     async def execute(
         self,
         query: str,
