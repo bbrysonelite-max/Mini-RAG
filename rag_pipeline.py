@@ -177,7 +177,16 @@ class RAGPipeline:
         error_count = 0
         
         if self.use_pgvector and self.vector_store_db:
-            self.db_context = await self.vector_store_db.ensure_default_context()
+            try:
+                self.db_context = await self.vector_store_db.ensure_default_context()
+            except RuntimeError as exc:
+                logger.warning(
+                    "pgvector context unavailable (%s); falling back to in-memory vector store",
+                    exc,
+                )
+                self.use_pgvector = False
+                self.vector_store_db = None
+                self.db_context = None
 
         async def process_batch(batch_index: int, batch_chunks: List[Dict[str, Any]]):
             nonlocal embedded_count, error_count
@@ -190,37 +199,44 @@ class RAGPipeline:
                 for db_id, chunk_data in zip(db_batch_ids, batch_chunks):
                     if db_id:
                         self.db_chunk_map[db_id] = chunk_data
-            
+
             try:
                 result = await self.model_service.embed({"texts": batch_texts})
-                    vectors = result.get("vectors", [])
-                
+                vectors = (result or {}).get("vectors", [])
+
                 if self.use_pgvector and self.vector_store_db:
-                        if self.db_context:
-                            await self.vector_store_db.ensure_chunks(list(zip(db_batch_ids, batch_chunks)), self.db_context)
+                    if self.db_context:
+                        await self.vector_store_db.ensure_chunks(
+                            list(zip(db_batch_ids, batch_chunks)),
+                            self.db_context,
+                        )
                     embeddings_batch = [
                         (chunk_id, vector, model_id)
-                            for chunk_id, vector in zip(db_batch_ids, vectors)
+                        for chunk_id, vector in zip(db_batch_ids, vectors)
                         if chunk_id and vector
                     ]
-                    
+
                     insert_result = await self.vector_store_db.insert_embeddings_batch(embeddings_batch)
                     embedded_count += insert_result.get('inserted', 0)
                     error_count += insert_result.get('errors', 0)
                 else:
-                        for chunk_id, vector in zip(db_batch_ids, vectors):
+                    for chunk_id, vector in zip(db_batch_ids, vectors):
                         if chunk_id and vector:
                             self.vector_store_memory[chunk_id] = vector
                             embedded_count += 1
-                
-                    logger.info(
-                        "Embedded batch",
-                        extra={"batch": batch_index + 1, "vectors": len(vectors), "storage": "pgvector" if self.use_pgvector else "memory"}
-                    )
-                
+
+                logger.info(
+                    "Embedded batch",
+                    extra={
+                        "batch": batch_index + 1,
+                        "vectors": len(vectors),
+                        "storage": "pgvector" if self.use_pgvector else "memory",
+                    },
+                )
+
             except Exception as e:
-                    logger.error(f"Error embedding batch {batch_index + 1}: {e}")
-                    error_count += len(batch_chunks)
+                logger.error(f"Error embedding batch {batch_index + 1}: {e}")
+                error_count += len(batch_chunks)
 
         loop = asyncio.get_event_loop()
         self._embedding_tasks = []

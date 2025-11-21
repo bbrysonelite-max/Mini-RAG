@@ -56,22 +56,28 @@
 - **API key authentication:** Clients can send `X-API-Key: <token>` (or `Authorization: ApiKey <token>`) when calling `/api/v1/*`. Scopes are enforced (`read`, `write`, `admin`) so ingest/delete/rebuild require `write` and admin endpoints require `admin`.
 - **API key dependency:** FastAPI routes can depend on `APIKeyAuth` to guarantee scope checks. Example: `@router.post("/ingest", dependencies=[Depends(APIKeyAuth(("write",)))])` or inject directly: `async def ingest(principal: APIKeyPrincipal = Depends(APIKeyAuth(("write",))))`.
 - **Metrics:** `/metrics` exposes `ask_requests_total`, `ask_request_latency_seconds` (including a startup `baseline` sample), `ingest_operations_total{source, outcome}`, `ingest_operation_latency_seconds{source, outcome}`, and `chunk_records_total` so dashboards can chart query volume, tail latencies, ingest throughput/failures, and index readiness in real time.
+- **Quota metrics & alerts:** Workspace quotas now export `workspace_quota_usage{workspace_id,metric}` (requests_today, requests_current_minute, chunks_today, chunk_total) and `workspace_quota_ratio{workspace_id,metric}` (requests_per_day, requests_per_minute, chunk_storage). When ratios exceed 0.9 the server emits `quota.threshold` logs—wire Prometheus alerts on these gauges to page ops before hard 429s trigger.
+- **Billing integration:** Provide `STRIPE_API_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL`, and `STRIPE_PORTAL_RETURN_URL` to enable `/api/v1/billing/checkout`, `/api/v1/billing/portal`, and `/api/v1/billing/webhook` (legacy `/api/billing/*` aliases remain). Checkout metadata carries `organization_id` so webhooks update `organizations.billing_status`.
+- **Ingestion gating:** `/api/ingest_urls` and `/api/ingest_files` call `_require_billing_active`. Trials (`billing_status=trialing`) work until `trial_ends_at`; `past_due`, `canceled`, or expired subscriptions yield HTTP 402 with `billing.blocked` logs, preventing new content uploads while queries remain available.
+- **UI navigation:** The web client now features a persistent header, breadcrumb trail, toast notifications, and ESC-dismissable chunk modal. See `docs/guides/UI_NAVIGATION.md` for flows and future enhancements.
+- **Admin APIs:** Use `/api/v1/admin/workspaces` to list tenants and `/api/v1/admin/billing` + `PATCH /api/v1/admin/billing/{org_id}` to inspect or override billing states (requires admin scope/API key).
 - **Security headers & CORS:** `CORS_ALLOW_ORIGINS` controls allowed origins (default `*`); `CONTENT_SECURITY_POLICY` overrides the default CSP. Middleware enforces HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and XSS protection headers.
 
 ### Usability
-- [ ] User-friendly error messages
-- [ ] Loading states
-- [ ] Progress indicators
+- [x] Navigation shell (Ask/Sources/Ingest/Admin + breadcrumb)
+- [x] Loading states (Ask spinner, ingest toasts/progress)
+- [x] Progress indicators (ingest progress bar + history)
 - [ ] Onboarding/tutorial
 - [ ] Help documentation
 - [ ] Keyboard shortcuts
 - [ ] Search improvements
+- [ ] React UI migration (see `docs/guides/REACT_MIGRATION.md`)
 
 ### Commercial Features
 - [ ] Multi-tenancy
 - [ ] User management
-- [ ] Usage quotas
-- [ ] Billing integration
+- [x] Usage quotas (workspace-level request + storage limits)
+- [x] Billing integration (Stripe checkout/portal + webhooks)
 - [x] API versioning (`/api/v1` router live)
 - [ ] API documentation
 - [x] Monitoring & logging (Prometheus metrics, structured logs, baselines)
@@ -79,6 +85,7 @@
 
 - `/api/v1` REST endpoints now mirror existing `/api/*` routes; authenticate with JWT cookies or API keys.
 - API key storage uses hashed records in the new `api_keys` table with per-key scopes and revocation timestamps; use the manage script above for operations.
+- **Workspace quotas:** `workspace_quota_settings` controls `chunk_limit`, `request_limit_per_day`, and `request_limit_per_minute`. `/ask`, `/api/ingest_urls`, and `/api/ingest_files` call into `QuotaService`, which tracks usage via `workspace_usage_counters`. Adjust limits via SQL (e.g., `INSERT ... ON CONFLICT DO UPDATE`) and watch Prometheus gauges to spot near-capacity tenants.
 
 ### Infrastructure
 - [ ] Database (PostgreSQL)

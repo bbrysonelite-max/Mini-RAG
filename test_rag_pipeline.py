@@ -21,6 +21,8 @@ import logging
 import tempfile
 from pathlib import Path
 
+import pytest  # type: ignore
+
 from rag_pipeline import RAGPipeline, RetrieveOptions
 from model_service_impl import ConcreteModelService
 from raglite import write_jsonl, ingest_docs
@@ -33,7 +35,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def test_bm25_only():
+async def _run_test_bm25_only():
     """Test BM25 retrieval without vector search."""
     print("\n" + "="*60)
     print("TEST 1: BM25-Only Retrieval")
@@ -82,7 +84,7 @@ async def test_bm25_only():
     return True
 
 
-async def test_hybrid_retrieval():
+async def _run_test_hybrid_retrieval():
     """Test hybrid retrieval with BM25 + vector search."""
     print("\n" + "="*60)
     print("TEST 2: Hybrid Retrieval (BM25 + Vector)")
@@ -151,7 +153,7 @@ async def test_hybrid_retrieval():
     return True
 
 
-async def test_filtering():
+async def _run_test_filtering():
     """Test filtering by source_type."""
     print("\n" + "="*60)
     print("TEST 3: Filtering")
@@ -201,7 +203,7 @@ async def test_filtering():
         return True
 
 
-async def test_abstention():
+async def _run_test_abstention():
     """Test abstention behavior."""
     print("\n" + "="*60)
     print("TEST 4: Abstention Behavior")
@@ -241,7 +243,7 @@ async def test_abstention():
     return True
 
 
-async def test_workspace_isolation():
+async def _run_test_workspace_isolation():
     """Ensure ingestion tags workspace_id and retrieval respects workspace filters."""
     print("\n" + "="*60)
     print("TEST 5: Workspace Isolation")
@@ -305,7 +307,7 @@ async def test_workspace_isolation():
     return success
 
 
-async def test_cli_workspace_flags():
+async def _run_test_cli_workspace_flags():
     """Verify CLI ingestion threads user/workspace IDs into chunks."""
     print("\n" + "="*60)
     print("TEST 6: CLI Workspace Flags")
@@ -364,7 +366,7 @@ async def test_cli_workspace_flags():
     return True
 
 
-async def test_chunk_backups():
+async def _run_test_chunk_backups():
     """Test that chunk backups are created for append and rewrite flows."""
     print("\n" + "="*60)
     print("TEST 7: Chunk Backup Safety")
@@ -555,6 +557,44 @@ async def test_chunk_backups():
     return success
 
 
+
+@pytest.mark.asyncio
+async def test_bm25_only():
+    assert await _run_test_bm25_only(), "BM25-only retrieval smoke test failed"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_retrieval():
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set")
+    assert await _run_test_hybrid_retrieval(), "Hybrid retrieval smoke test failed"
+
+
+@pytest.mark.asyncio
+async def test_filtering():
+    assert await _run_test_filtering(), "Filtering smoke test failed"
+
+
+@pytest.mark.asyncio
+async def test_abstention():
+    assert await _run_test_abstention(), "Abstention smoke test failed"
+
+
+@pytest.mark.asyncio
+async def test_workspace_isolation():
+    assert await _run_test_workspace_isolation(), "Workspace isolation check failed"
+
+
+@pytest.mark.asyncio
+async def test_cli_workspace_flags():
+    assert await _run_test_cli_workspace_flags(), "CLI workspace flag propagation failed"
+
+
+@pytest.mark.asyncio
+async def test_chunk_backups():
+    assert await _run_test_chunk_backups(), "Chunk backup safety check failed"
+
+
 async def main():
     """Run all tests."""
     print("="*60)
@@ -565,49 +605,49 @@ async def main():
     
     # Test 1: BM25 only
     try:
-        results.append(("BM25 Retrieval", await test_bm25_only()))
+        results.append(("BM25 Retrieval", await _run_test_bm25_only()))
     except Exception as e:
         print(f"\n✗ Test 1 failed: {e}")
         results.append(("BM25 Retrieval", False))
     
     # Test 2: Hybrid (optional - requires API key)
     try:
-        results.append(("Hybrid Retrieval", await test_hybrid_retrieval()))
+        results.append(("Hybrid Retrieval", await _run_test_hybrid_retrieval()))
     except Exception as e:
         print(f"\n✗ Test 2 failed: {e}")
         results.append(("Hybrid Retrieval", False))
     
     # Test 3: Filtering
     try:
-        results.append(("Filtering", await test_filtering()))
+        results.append(("Filtering", await _run_test_filtering()))
     except Exception as e:
         print(f"\n✗ Test 3 failed: {e}")
         results.append(("Filtering", False))
     
     # Test 4: Abstention
     try:
-        results.append(("Abstention", await test_abstention()))
+        results.append(("Abstention", await _run_test_abstention()))
     except Exception as e:
         print(f"\n✗ Test 4 failed: {e}")
         results.append(("Abstention", False))
     
     # Test 5: Workspace isolation
     try:
-        results.append(("Workspace Isolation", await test_workspace_isolation()))
+        results.append(("Workspace Isolation", await _run_test_workspace_isolation()))
     except Exception as e:
         print(f"\n✗ Test 5 failed: {e}")
         results.append(("Workspace Isolation", False))
     
     # Test 6: CLI workspace flags
     try:
-        results.append(("CLI Workspace Flags", await test_cli_workspace_flags()))
+        results.append(("CLI Workspace Flags", await _run_test_cli_workspace_flags()))
     except Exception as e:
         print(f"\n✗ Test 6 failed: {e}")
         results.append(("CLI Workspace Flags", False))
     
     # Test 7: Chunk backups
     try:
-        results.append(("Chunk Backup Safety", await test_chunk_backups()))
+        results.append(("Chunk Backup Safety", await _run_test_chunk_backups()))
     except Exception as e:
         print(f"\n✗ Test 7 failed: {e}")
         results.append(("Chunk Backup Safety", False))

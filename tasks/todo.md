@@ -5,6 +5,26 @@
 
 ---
 
+# Session Plan – Nov 21, 2025 (Hardening & Review Prep)
+
+**Goal:** Close remaining risks by auditing unfinished tasks, dummy data, non-production secrets, and teeing up a focused code review pass.
+
+## TODOs
+- [x] **H1: Confirm outstanding “difficult” tasks** – Sweep Phase 6/7 backlogs plus session plans to identify high-effort items still open; summarize scope and blockers.
+- [x] **H2: Catalog dummy or test data** – Search repo for placeholder datasets (`examples/`, `docs/`, `tests/`) and note anything that should be scrubbed or clearly labeled before launch.
+- [x] **H3: Inventory non-production keys/secrets** – Locate fake API keys, Stripe IDs, or sample credentials in code/docs/env templates; flag which must be replaced with secure storage or runtime config.
+- [x] **H4: Debug suspicious findings** – For each gap uncovered in H2/H3, trace the code path to confirm runtime impact (e.g., default credentials loaded, test data shipped) and document required fixes.
+- [x] **H5: Assemble code review briefing** – Prepare a summarized checklist for review agents (areas touched recently, high-risk modules, gaps from H1–H4) so they can focus on critical issues.
+
+## Review
+- H1: Phase 6 UI backlog (P6-U1..U5) and UI Navigation Overhaul tasks (U6-1..U6-4) remain the only unchecked, high-effort items. They demand coordinated front-end work (navigation shell refactor, ingest toasts, home dashboard, accessibility polish) plus design artifacts (wireframes) and backend data surfacing for dashboard + billing states.
+- H2: Demo/test assets live under `examples/transcripts/` (two YouTube `.vtt` files, `sample.txt`, and `sources.txt` driving ingest scripts), `scripts/ingest/ingest_all.sh` defaults to that sample list, and `out/chunks.jsonl` ships with a single sample chunk referencing `examples/transcripts/sample.txt`. Postman collection (`docs/postman/mini-rag.postman_collection.json`) and various docs embed placeholder values for walkthroughs; automated tests rely on inline `Fake*` helpers with no exported fixture files.
+- H3: `env.template` uses instructional placeholders (`your-google-client-id-here`, etc.); `docker-compose.yml` falls back to `sk_test_placeholder` / `whsec_placeholder` Stripe secrets. Docs cite test patterns (`sk_test_*`, `whsec_*`, `price_123`, sample success/cancel URLs) and CHANGELOG contains example runs with `STRIPE_API_KEY=fake`. PGVector/model guides show `OPENAI_API_KEY=sk-...` samples. None of these are active credentials but must be replaced with real secrets via env management before production.
+- H4: Runtime check confirmed: `server.ensure_index()` eagerly loads `out/chunks.jsonl`, so the bundled sample chunk would leak demo content until operators ingest real data; `SessionMiddleware` falls back to the hard-coded `"change-this-secret-key-in-production"` (and Docker defaults `SECRET_KEY=changeme`), making session cookies forgeable unless overridden; and any non-empty `STRIPE_API_KEY` (including `sk_test_placeholder`) spins up `BillingService`, leading to HTTP 400 Stripe failures in production instead of disabling billing. All require explicit production configuration (clean chunk file, unique secret key, real Stripe credentials).
+- H5: **Code review briefing:** focus on `server.py` (auth context, session secrets, billing init), `rag_pipeline.py` (embedding loop + pgvector fallback), `billing_service.py` (Stripe workflows), and recent client/test additions (`clients/sdk.py`, `tests/test_sdk.py`, `tests/test_rag_pipeline.py`). Validate remaining Phase 6 UI work (navigation shell, ingest UX, dashboard, accessibility) before merge, and confirm operational prerequisites: purge sample chunks, inject production `SECRET_KEY`, and provide real Stripe/OpenAI credentials plus pgvector connectivity.
+- _Pending approval & execution._
+
+---
 # Phase 5 API Key Infrastructure (Nov 19, 2025)
 
 **Goal:** Establish secure API key storage and issuance mechanics to pave the way for authenticated programmatic access.
@@ -537,6 +557,98 @@ All changes followed these principles:
 
 ---
 
+# Phase 5 Workspace Quotas (Nov 20, 2025)
+
+**Goal:** Enforce per-workspace usage ceilings before enabling billing tiers.
+
+## TODOs
+- [x] **P5-B1: Design per-workspace quota schema** – added `workspace_quota_settings` + `workspace_usage_counters` tables to `db_schema.sql` with sane defaults.
+- [x] **P5-B2: Instrument usage counters** – introduced `QuotaService` with daily+per-minute tracking, wired `/ask`, `/api/ingest_urls`, and `/api/ingest_files` to consume quotas, and backfilled regression coverage in `test_quota_service.py`.
+- [x] **P5-B3: Expose quota metrics/alerts** – exported Prometheus gauges (`workspace_quota_usage`, `workspace_quota_ratio`) plus `quota.threshold` logs so on-call gets signal as tenants near their limits.
+
+## Review
+- `QuotaService` (server singleton) enforces chunk, daily request, and per-minute request ceilings; violations raise HTTP 429 with structured errors.
+- Usage counters persist in PostgreSQL for audits, while a short-lived in-memory minute window prevents bursts even without Redis.
+- Prometheus gauges + alert-friendly `quota.threshold` events surface when tenants exceed 90% of any plan limit; Quick Reference document updated with the metric names and operating guidance.
+- Workspace chunk tallies reuse the JSONL corpus (counted per workspace) so limits apply before we fully move to DB-backed chunks; helper is called before ingestion grows the corpus.
+- Tests cover default settings, chunk cap enforcement, daily quotas, and per-minute throttling behavior.
+
+---
+
+# Phase 5 Billing & Subscriptions (Nov 20, 2025)
+
+**Goal:** Ship Stripe-backed subscriptions so ingestion honors paid status.**
+
+## TODOs
+- [x] **P5-C1: Draft Stripe billing schema/state model** – expanded `organizations` with Stripe identifiers, billing metadata, and expiration timestamps plus a new `organization_billing_events` audit table.
+- [x] **P5-C2: Integrate Stripe API + webhooks** – added `billing_service.py`, checkout/portal endpoints, webhook validation via `STRIPE_WEBHOOK_SECRET`, and event persistence that keeps billing state in sync.
+- [x] **P5-C3: Enforce billing status in ingestion** – `_require_billing_active` now runs before `/api/ingest_urls` and `/api/ingest_files`, blocking uploads with HTTP 402 when trials lapse or subscriptions fall into `past_due`/`canceled`.
+
+## Review
+- Checkout + billing portal endpoints require admin privileges, use env-configured price/redirect URLs, and embed `organization_id` metadata so the webhook handler can map events back to tenants.
+- Webhooks are stored in `organization_billing_events` and drive updates to `billing_status`, Stripe customer/subscription IDs, and `subscription_expires_at`/`trial_ends_at`, ensuring quota enforcement + UI can reflect real-time billing state.
+- Ingestion guards log `billing.blocked` whenever a workspace is denied, making it easy to alert GTM teams and unblock customers; trials remain usable until `trial_ends_at`, while expired or unpaid subscriptions can still query existing data.
+- Quick Reference + CHANGELOG capture the new billing environment variables, REST endpoints, and alerting hooks so ops and support can roll out the paid experience confidently.
+
+---
+
+# Phase 5 Documentation & SDK (Nov 20, 2025)
+
+**Goal:** Package the enterprise-ready surface area with polished docs, sample client, and contract tests.**
+
+## TODOs
+- [x] **P5-D1: Billing & API onboarding guide** – create `docs/guides/BILLING_AND_API.md` covering Stripe setup, new endpoints, and quota behavior; add Postman-friendly request examples.
+- [x] **P5-D2: Minimal Python SDK** – add `clients/sdk.py` with typed wrappers for `/ask`, `/api/v1/sources`, ingest endpoints, and billing helpers plus README usage snippet.
+- [x] **P5-D3: Contract tests/Postman export** – capture a JSON collection (under `docs/postman/mini-rag.postman_collection.json`) and add a lightweight `tests/test_api_contract.py` hitting the FastAPI app via TestClient to ensure required routes + auth wiring stay intact.
+
+### Execution Plan – Nov 21, 2025
+- [x] **E1:** Audit `docs/guides/BILLING_AND_API.md` against current billing endpoints/env vars; note any drift or missing guidance.
+- [x] **E2:** Exercise `clients/sdk.py` to ensure wrappers cover current surface (`ask`, ingestion, sources, billing) and add minimal tests/docs tweaks as needed.
+- [x] **E3:** Validate contract assets by running `tests/test_api_contract.py` and reviewing `docs/postman/mini-rag.postman_collection.json`; capture follow-ups.
+- [x] **E4:** Document outcomes in this file’s Review section once tasks above are complete.
+
+## Review
+- Updated `docs/guides/BILLING_AND_API.md` to highlight `/api/v1/billing/*` endpoints while noting legacy aliases and refreshed Stripe CLI examples.
+- Added `clients/__init__.py`, new SDK regression tests (`tests/test_sdk.py`), and `tests/conftest.py` to keep local modules importable during pytest runs.
+- `./venv/bin/pytest tests/test_sdk.py tests/test_api_contract.py` now passes (6 tests) confirming SDK helpers and contract guards behave as expected.
+- Spot-checked `docs/postman/mini-rag.postman_collection.json` to ensure requests reference the versioned REST surface and required headers.
+
+---
+
+# Session Plan – Nov 21, 2025 (Docs Polish & Phase 6 Prep)
+
+**Goal:** Sync customer-facing docs with the API v1 rollout, document SDK usage, validate regressions, and prepare the next UI polish sprint.
+
+## TODOs
+- [x] **DP1: Quick reference alignment** – Review `docs/guides/QUICK_REFERENCE.md` for legacy `/api/*` billing references and update wording/samples to emphasize `/api/v1/billing/*`.
+- [x] **DP2: SDK README snippet** – Add concise setup/usage guidance for `MiniRAGClient` (auth + ask + ingest) in an appropriate README (`clients/README.md` or existing Quick Reference).
+- [x] **DP3: Broader regression sweep** – Run the key pytest suites (`test_rag_pipeline.py`, `test_quota_service.py`, `test_billing_guard.py`) and capture any failures or warnings.
+- [x] **DP4: Phase 6 execution prep** – Revisit Phase 6 TODOs, confirm priorities, and outline immediate next implementation steps.
+- [x] **DP5: Functionality gaps audit** – Document any currently non-functional or degraded project features along with required remediation steps.
+
+## Review
+- **Docs alignment:** `docs/guides/QUICK_REFERENCE.md` now references `/api/v1/billing/*` (legacy aliases noted), and `clients/README.md` walks through `MiniRAGClient` setup plus ask/ingest usage.
+- **Regression sweep:** `./venv/bin/pytest test_rag_pipeline.py test_quota_service.py test_billing_guard.py` passes (16 tests). Added pytest wrappers for pipeline smoke checks and a pgvector fallback when the DB pool is unavailable.
+- **Phase 6 focus:** Tackle `P6-U1` (navigation shell + breadcrumbs) first, followed by `P6-U2` ingest toasts/retries, then `P6-U3` dashboard data. Update `docs/guides/UI_NAVIGATION.md` alongside UI changes and keep React parity in mind.
+- **Known gaps:** Hybrid vector search still requires `OPENAI_API_KEY` plus Postgres/pgvector; without them the pipeline falls back to BM25/in-memory vectors. Stripe billing endpoints respond 503 until `STRIPE_*` env vars + webhook tunnel are configured. React UI remains in preview and needs the Phase 6 polish items before it can replace the legacy frontend.
+
+---
+
+# Phase 6 UI/UX Overhaul Plan (Nov 20, 2025)
+
+**Goal:** Deliver a production-ready admin/workspace UI with clear navigation, feedback, and billing states before GA.**
+
+## TODOs
+- [ ] **P6-U1: Navigation & Breadcrumbs** – add a persistent sidebar/workspace switcher, top-level breadcrumbs, and fix broken “Close”/back actions in chunk/source explorers.
+- [ ] **P6-U2: Ingest workflow refresh** – introduce upload progress toasts, retry affordances, and inline billing/quota warnings when ingestion is blocked.
+- [ ] **P6-U3: Home dashboard** – create a landing panel showing recent activity, quota usage gauges, and billing status so admins see system health immediately after login.
+- [ ] **P6-U4: Billing-aware UX polish** – surface trial countdowns, `past_due` banners, and test-mode badges; ensure CTA buttons route to the new billing checkout/portal endpoints.
+- [ ] **P6-U5: Accessibility & keyboard shortcuts** – add focus outlines, Escape-to-close modals, and consistent shortcuts (Cmd+Enter submit, Cmd+K focus search).
+
+## Review
+- _Pending once implementation completes._
+
+---
 ## Server Availability Investigation (Nov 18, 2025)
 
 **Goal:** Restore the local FastAPI server so we can resume manual testing (OAuth can wait until the core server boots reliably).
@@ -674,5 +786,87 @@ All changes followed these principles:
 - Navigation bar now includes anchors to Ask/Sources/Ingest plus signed-in avatar + logout; login button hides when authenticated.
 - Chunk “Close” button removes the overlay and scrolls/focuses the source list for quicker multi-document review.
 - Additional issues logged for upcoming redesign: lack of breadcrumbs on admin pages, chunk modals lacking keyboard support/escape handling, ingest progress toasts missing retry controls.
+
+---
+
+# Phase 6 UI Navigation Overhaul (Nov 20, 2025)
+
+**Goal:** Replace the ad-hoc UI controls with a predictable navigation shell, breadcrumbs, and UX feedback loops.**
+
+## TODOs
+- [ ] **U6-1: Document nav wireframes** – update this plan + `docs/guides/UI_NAVIGATION.md` with flows for Ask/Sources/Ingest/Admin, capturing the pain points observed during manual OAuth verification.
+- [ ] **U6-2: Implement navigation shell** – refactor `frontend/index.html` to use a shared top bar + breadcrumb stub, ensure chunk modals and admin panes route through the shared controls.
+- [ ] **U6-3: UX feedback states** – add loading indicators (ask/ingest), empty-state callouts, and consistent signed-in status across panes.
+- [ ] **U6-4: Smoke test + docs** – manual walkthrough, add screenshots or GIF placeholders, and refresh `docs/guides/QUICK_REFERENCE.md` with the new navigation summary.
+
+## Review
+- Navigation shell now lives in `frontend/index.html` with a shared header, breadcrumbs, and Admin placeholder section; chunk modals trap focus and honor ESC.
+- Ask/ingest flows display loading/empty states plus toast + status banners; sources list shows empty callouts and refreshes when the nav tab is selected.
+- Auth widgets (user name, logout) remain visible across panes, and the new `docs/guides/UI_NAVIGATION.md` captures the flow for future enhancements.
+
+---
+
+# Phase 7 CI/CD + Admin + React (Nov 20, 2025)
+
+**Goal:** Establish automated build/test coverage and lay groundwork for the React admin console + migration.**
+
+## TODOs
+- [x] **P7-A1: CI workflow scaffold** – add `.github/workflows/ci.yml` running backend pytest selection and React build placeholder (frontend-react), plus document requirements in `docs/infra/CI_SETUP.md`.
+- [x] **P7-A2: Docker & deploy pipeline** – containerize the app + Postgres, add `docker-compose.yml`, and document `docker compose up --build`.
+- [x] **P7-B1: Admin API endpoints** – expose workspace/billing admin routes + tests + docs.
+- [x] **P7-B2: React shell** – scaffold `frontend-react/` (Vite/TS), implement Ask/Sources/Ingest/Admin shell, and add README instructions.
+- [x] **P7-B3: Migration notes** – document toggle strategy + onboarding steps for the React UI (`docs/guides/REACT_MIGRATION.md`).
+
+## Review
+- CI job now enforces lint/test/build gates; see `docs/infra/CI_SETUP.md` for secrets and future enhancements.
+- Dockerfile + docker-compose provide local/CI parity; README updated with `docker compose` instructions.
+- `/api/v1/admin/*` endpoints return workspace & billing data with admin scope enforcement, covered by `tests/test_admin_api.py` and noted in the billing guide/quick reference.
+- `frontend-react/` introduces a Vite/React shell (Ask/Sources/Ingest/Admin panes) with dev proxy to the FastAPI backend; `.gitignore` updated and README documents dev workflow. React builds are served at `/app-react` once `npm run build` populates `frontend-react/dist/`.
+- React migration playbook tracks parity, toggle strategy, and onboarding steps for the new UI.
+
+---
+
+# Phase 8 Observability & Scaling (Upcoming)
+
+**Goal:** Harden the platform for enterprise-scale usage with deeper observability, background processing, and compliance-ready controls.**
+
+## Proposed Tracks
+- **P8-O1: Centralized logging & tracing** – adopt OpenTelemetry/structured logging, ship to a log aggregator, define correlation IDs.
+- **P8-O2: Metrics & alerting** – extend Prometheus coverage (p95/p99 latencies, per-tenant quotas, queue depth) and publish Grafana dashboards + alert rules.
+- **P8-Q1: Background workers** – introduce a job queue (Celery/RQ/Temporal) for asynchronous embedding, scheduled re-indexing, and high-volume ingestion flows.
+- **P8-S1: Security posture** – tighten CSP/headers, add dependency & container scanning to CI, explore SSO/SAML integration plan.
+- **P8-C1: Compliance & data retention** – design audit logging workflows, export/delete APIs, and retention policies to support enterprise requirements.
+
+## P8-O1 – Logging & Tracing (step-by-step)
+- [x] **P8-O1-1: Document current logging/tracing gaps** – captured deficiencies + target state in `docs/guides/Phase8_Plan.md`.
+- [x] **P8-O1-2: Select OTEL stack + wire middleware** – added `telemetry.py`, `correlation.py`, hooked middleware/exporter toggles, updated README/CHANGELOG, and verified baseline tests.
+- [x] **P8-O1-3: Define & emit enriched log schema** – correlation helpers now capture user/workspace/org contextvars, `_log_event` auto-enriches events, JSON logs include the schema fields, and `docs/guides/Phase8_Plan.md` documents the sample payload.
+- [x] **P8-O1-4: Implement downstream propagation** – added `build_observability_headers`, attached headers to healthcheck/OAuth `httpx` clients, forwarded observability headers through OpenAI SDK calls, and stamped Stripe metadata/client references with the current `request_id`. Regression run captured in CHANGELOG.
+- [x] **P8-O1-5: Document operational procedures** – outlined retention/rotation guidance, dashboards/queries, on-call SOP, access controls, and troubleshooting in `docs/guides/Phase8_Plan.md`.
+
+### P8-O1 Review (Nov 21, 2025)
+- Step 1: Documented gaps + target architecture inside `docs/guides/Phase8_Plan.md`.
+- Step 2: Landed `telemetry.py` + `correlation.py`, toggled OTEL via env flags, and verified baseline pytest coverage.
+- Step 3: Added tenant context propagation + `_log_event` enrichment, updated docs with schema/sample, and backfilled CHANGELOG/todo updates.
+- Step 4: Built observability header helper, instrumented outbound HTTP/OpenAI/Stripe calls, stamped billing metadata with request IDs, and captured regression/docs updates.
+- Step 5: Authored operational runbook covering retention, dashboards, on-call response, access controls, and troubleshooting playbooks.
+
+---
+
+## P8-O2 – Metrics & Alerting (plan)
+- [x] **P8-O2-1: Document metrics gaps** – inventoried existing Prometheus metrics, logged missing latency percentiles/quota coverage, and captured desired alert conditions in `docs/guides/Phase8_Plan.md`.
+- [x] **P8-O2-2: Define instrumentation strategy** – outlined histogram buckets, error counters, throughput gauges, quota/health alerts, label hygiene, and dashboard plan in `docs/guides/Phase8_Plan.md`.
+- [x] **P8-O2-3: Implement metrics & alerting artifacts** – tightened histogram buckets, added status-code labeled counters, quota/external error metrics, chunk throughput counters, instrumented ingestion flows, and documented the work.
+
+> ✅ Metrics instrumentation landed; next Phase 8 track TBD (metrics rule templates & dashboards queued for follow-up in docs/infra).
+
+---
+
+### P8-O2 Review (Nov 21, 2025)
+- Step 1: Logged observability gaps and alert desires in `docs/guides/Phase8_Plan.md`.
+- Step 2: Captured metric/alert design (buckets, counters, thresholds, dashboards) in the plan.
+- Step 3: Implemented status-code aware ask/ingest counters, quota/external error metrics, chunk throughput counters, and updated docs/todos/changelog.
+
+---
 
 ---
