@@ -5,54 +5,129 @@
 <title>RAG Desk</title>
 <link rel="icon" type="image/svg+xml" href="/app/favicon.svg"/>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:1000px;margin:1.5rem auto;padding:0 1rem;line-height:1.6}
-nav{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
-.tab{padding:.5rem 1rem;border:1px solid #ccc;border-radius:8px;cursor:pointer;transition:all 0.2s;user-select:none}
-.tab:hover{background:#f5f5f5;border-color:#999}
-.tab.active{background:#111;color:#fff;border-color:#111}
-.tab.active:hover{background:#333}
-section{display:none} section.active{display:block;animation:fadeIn 0.3s}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f4f6f8;color:#111;line-height:1.6}
+.app-layout{display:flex;min-height:100vh;background:#f4f6f8}
+.sidebar{width:260px;padding:2rem 1.75rem;background:#fff;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;gap:2rem;position:sticky;top:0;max-height:100vh;box-sizing:border-box}
+.brand{font-size:1.5rem;font-weight:700;color:#111}
+.workspace-switcher{display:flex;flex-direction:column;gap:.5rem}
+.workspace-switcher label{font-size:.85rem;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.workspace-switcher select{padding:.55rem .75rem;border-radius:10px;border:1px solid #d0d7e2;background:#fafafa;font-size:.95rem;font-family:inherit}
+.workspace-switcher select:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.08);background:#fff}
+.side-nav{display:flex;flex-direction:column;gap:.35rem}
+.side-nav a{padding:.55rem .85rem;border-radius:10px;text-decoration:none;border:1px solid transparent;color:#333;font-weight:500;display:flex;align-items:center;gap:.6rem}
+.side-nav a.active{background:#111;color:#fff;border-color:#111}
+.side-nav a:not(.active):hover{border-color:#333;color:#111}
+.sidebar-footer{margin-top:auto;font-size:.8rem;color:#64748b}
+.app-shell{flex:1;max-width:100%;padding:2rem 3rem;box-sizing:border-box}
+.app-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.page-heading{display:flex;flex-direction:column;gap:.5rem}
+.page-heading h1{margin:0;font-size:1.9rem;font-weight:700;color:#111}
+.workspace-pill{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;padding:.25rem .65rem;border-radius:999px;background:#eef2ff;color:#312e81}
+.user-meta{display:flex;align-items:center;gap:.75rem}
+#breadcrumb{font-size:.9rem;color:#64748b}
+#breadcrumb span{margin-right:.35rem}
+#breadcrumb span::after{content:"/";margin-left:.35rem;color:#cbd5f5}
+#breadcrumb span:last-child{color:#111;font-weight:600}
+#breadcrumb span:last-child::after{content:""}
+section{display:none;background:#fff;padding:1.5rem;border-radius:16px;box-shadow:0 10px 30px rgba(15,23,42,.08);margin-bottom:1.5rem}
+section.active{display:block;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-textarea,input[type=text]{width:100%;padding:.6rem;border:1px solid #ddd;border-radius:8px;font-family:inherit;font-size:inherit;box-sizing:border-box}
-textarea:focus,input[type=text]:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.1)}
-.btn{padding:.6rem 1rem;border-radius:8px;border:1px solid #333;background:#111;color:#fff;cursor:pointer;font-size:inherit;transition:all 0.2s;font-weight:500}
-.btn:hover{background:#333;transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.2)}
-.btn:active{transform:translateY(0)}
-pre{background:#f7f7f7;padding:1rem;border-radius:8px;white-space:pre-wrap;max-height:420px;overflow:auto;border:1px solid #eee}
-.badge{background:#eee;border-radius:6px;padding:.2rem .5rem;margin-right:.4rem;font-size:0.85em;display:inline-block}
+textarea,input[type=text]{width:100%;padding:.6rem;border:1px solid #ddd;border-radius:10px;font-family:inherit;font-size:inherit;box-sizing:border-box;background:#fafafa}
+textarea:focus,input[type=text]:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.1);background:#fff}
+.btn{padding:.6rem 1rem;border-radius:10px;border:1px solid #333;background:#111;color:#fff;cursor:pointer;font-size:inherit;transition:all 0.2s;font-weight:500}
+.btn:hover{background:#333;transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,0.2)}
+.btn:disabled{opacity:0.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn:focus-visible{outline:3px solid rgba(59,130,246,0.6);outline-offset:3px}
+a:focus-visible{outline:3px solid rgba(59,130,246,0.6);outline-offset:3px;border-radius:6px}
+pre{background:#f7f7f7;padding:1rem;border-radius:12px;white-space:pre-wrap;max-height:420px;overflow:auto;border:1px solid #eee}
+.badge{background:#eef2ff;border-radius:999px;padding:.2rem .6rem;margin-right:.4rem;font-size:0.85em;display:inline-block;color:#1e1b4b}
 .small{font-size:.9em;color:#555}
 .row{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
 .counter{font-weight:600}
-.source-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1);transform:translateY(-2px);transition:all 0.2s}
-.chunk-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all 0.2s}
-mark{background:#ffeb3b;padding:0 2px;border-radius:2px}
-a{color:#111;text-decoration:underline}
-a:hover{color:#333}
+.source-card,.chunk-card{transition:all 0.2s}
+.source-card:hover,.chunk-card:hover{box-shadow:0 4px 16px rgba(15,23,42,0.08);transform:translateY(-2px)}
+mark{background:#fef08a;padding:0 2px;border-radius:4px}
+a{color:#0d67ff;text-decoration:none}
+a:hover{text-decoration:underline}
+#toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:1rem 1.25rem;border-radius:12px;background:#111;color:#fff;box-shadow:0 10px 25px rgba(0,0,0,0.15);display:none;z-index:2000}
+#toast.error{background:#b42318}
+#toast.success{background:#0f9d58}
+.empty-state{padding:1rem;border:1px dashed #cbd5f5;border-radius:12px;background:#f8fafc;color:#475569;text-align:center}
+@media (max-width:992px){
+  .app-layout{flex-direction:column}
+  .sidebar{position:static;width:auto;max-height:none;border-right:none;border-bottom:1px solid #e5e7eb;padding:1.5rem;gap:1.25rem}
+  .side-nav{flex-direction:row;flex-wrap:wrap}
+  .side-nav a{flex:1;justify-content:center}
+  .app-shell{padding:1.5rem}
+  .app-header{align-items:stretch}
+}
 @media (max-width:768px){
-  body{padding:0 0.5rem}
-  nav{flex-direction:column}
-  .tab{width:100%;text-align:center}
+  .app-shell{padding:1.25rem}
+  .btn,.row,.app-header{width:100%}
   .row{flex-direction:column;align-items:stretch}
-  .btn{width:100%}
   pre{max-height:300px}
 }
 </style>
 </head>
 <body>
-<h1>RAG Desk</h1>
-<nav style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem">
-  <div style="display:flex;align-items:center;gap:0.75rem">
-    <span style="font-size:1.4rem;font-weight:600">Mini-RAG</span>
-    <a href="#ask" style="color:#0070f3;text-decoration:none">Ask</a>
-    <a href="#browser" style="color:#0070f3;text-decoration:none">Sources</a>
-    <a href="#ingest" style="color:#0070f3;text-decoration:none">Ingest</a>
-  </div>
-  <div id="userInfo" style="display:none;align-items:center;gap:0.75rem">
-    <div style="font-size:0.95rem" id="userName"></div>
-    <button id="logoutBtn" class="btn" style="background:#c33">Log out</button>
-  </div>
-  <button id="loginBtn" class="btn">Sign in with Google</button>
-</nav>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div>
+      <div class="brand">Mini-RAG</div>
+      <p class="small" style="margin:0;color:#475569">Answer questions from your private sources.</p>
+    </div>
+    <div class="workspace-switcher">
+      <label for="workspaceSelect">Workspace</label>
+      <select id="workspaceSelect" aria-describedby="workspaceHint">
+        <option value="default">Default workspace</option>
+      </select>
+      <span id="workspaceHint" class="small" style="color:#65738a">Switching updates query & ingest scope.</span>
+    </div>
+    <nav class="side-nav" aria-label="Primary navigation">
+      <a href="#ask" data-nav="ask" class="active">🧠 Ask</a>
+      <a href="#browser" data-nav="browser">📚 Sources</a>
+      <a href="#ingest" data-nav="ingest">⬆️ Ingest</a>
+      <a href="#admin" data-nav="admin">⚙️ Admin</a>
+    </nav>
+    <div class="sidebar-footer">Need help? Check the Quick Reference guide in docs.</div>
+  </aside>
+  <main class="app-shell" id="mainContent" tabindex="-1">
+    <header class="app-header">
+      <div class="page-heading">
+        <h1 id="pageTitle">Ask</h1>
+        <div class="workspace-pill">Workspace: <span id="workspaceLabel">Default workspace</span></div>
+        <nav id="breadcrumb" aria-label="Breadcrumb">
+          <span>Home</span><span>Ask</span>
+        </nav>
+      </div>
+      <div class="user-meta">
+        <div id="userInfo" style="display:none;align-items:center;gap:0.5rem">
+          <div style="font-size:0.95rem" id="userName"></div>
+          <button id="logoutBtn" class="btn" type="button" style="background:#c33">Log out</button>
+        </div>
+        <button id="loginBtn" class="btn" type="button">Sign in with Google</button>
+      </div>
+    </header>
+
+    <div id="dashboardSummary" style="margin-bottom:1.5rem">
+      <div style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+        <div style="background:#fff;padding:1.25rem;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,0.08)">
+          <div class="small" style="text-transform:uppercase;color:#64748b;font-weight:600;letter-spacing:.04em">Documents indexed</div>
+          <div style="font-size:2rem;font-weight:700;margin-top:.35rem" id="metricDocCount">–</div>
+          <div class="small" style="color:#94a3b8;margin-top:.25rem">Across the active workspace</div>
+        </div>
+        <div style="background:#fff;padding:1.25rem;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,0.08)">
+          <div class="small" style="text-transform:uppercase;color:#64748b;font-weight:600;letter-spacing:.04em">Last ingestion</div>
+          <div style="font-size:1.25rem;font-weight:600;margin-top:.35rem" id="metricLastIngest">No ingests yet</div>
+          <div class="small" style="color:#94a3b8;margin-top:.25rem" id="metricLastIngestDetail">Run ingest to populate your knowledge base.</div>
+        </div>
+        <div style="background:#fff;padding:1.25rem;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,0.08)" id="billingCard">
+          <div class="small" style="text-transform:uppercase;color:#64748b;font-weight:600;letter-spacing:.04em">Billing status</div>
+          <div style="font-size:1.25rem;font-weight:600;margin-top:.35rem" id="metricBillingStatus">Unknown</div>
+          <div class="small" style="color:#94a3b8;margin-top:.25rem" id="metricBillingDetail">Sign in with admin access to view Stripe status.</div>
+        </div>
+      </div>
+    </div>
 
 <section id="ask" class="active">
   <div class="row">
@@ -82,10 +157,12 @@ a:hover{color:#333}
   <h3>Ingest URLs</h3>
   <textarea id="urls" placeholder="Paste YouTube links, one per line"></textarea>
   <div class="row">
-    <button id="ingestUrls" class="btn">Ingest URLs</button>
-    <button id="dedupe" class="btn">Dedupe</button>
-    <button id="rebuild" class="btn">Rebuild Index</button>
+    <button id="ingestUrls" class="btn" type="button">Ingest URLs</button>
+    <button id="retryUrlsBtn" class="btn" type="button" style="display:none;background:#0f766e">Retry failed URLs</button>
+    <button id="dedupe" class="btn" type="button">Dedupe</button>
+    <button id="rebuild" class="btn" type="button">Rebuild Index</button>
   </div>
+  <div id="ingestAlerts" role="alert" style="display:none;padding:1rem;border-radius:10px;margin:1rem 0;font-weight:500"></div>
   <h3>Upload files (.vtt .srt .txt .pdf .docx .md)</h3>
   <div id="dropZone" style="border:2px dashed #ccc;border-radius:8px;padding:2rem;text-align:center;margin:1rem 0;cursor:pointer;background:#fafafa">
     <p>Drag and drop files here or click to select</p>
@@ -98,7 +175,8 @@ a:hover{color:#333}
     </div>
     <div id="progressText" class="small" style="margin-top:0.5rem"></div>
   </div>
-  <button id="upload" class="btn">Upload & Ingest</button>
+  <button id="upload" class="btn" type="button">Upload & Ingest</button>
+  <button id="retryFilesBtn" class="btn" type="button" style="display:none;background:#0f766e;margin-left:0.75rem">Retry failed files</button>
   <div id="statusMessage" style="display:none;padding:1rem;border-radius:8px;margin:1rem 0;font-weight:500"></div>
   <h3>Ingestion History</h3>
   <div id="ingestHistory" style="max-height:200px;overflow:auto;margin:1rem 0">
@@ -108,9 +186,211 @@ a:hover{color:#333}
   <pre id="log"></pre>
 </section>
 
+<section id="admin">
+  <h2 style="margin-top:0">Admin</h2>
+  <p class="small">Workspace billing and quota controls will live here. Until then, use the billing endpoints or CLI helpers.</p>
+  <div class="empty-state">Admin dashboard coming soon.</div>
+</section>
+
+<div id="toast" role="status" aria-live="polite"></div>
+  </main>
+</div>
+
 <script>
 function $(id){return document.getElementById(id)}
 const q=$("q"), ans=$("ans"), score=$("score"), mic=$("mic"), countEl=$("count"), log=$("log");
+const navLinks=document.querySelectorAll('[data-nav]');
+const sections=document.querySelectorAll('section');
+const breadcrumb=$("breadcrumb");
+const pageTitle=$("pageTitle");
+const mainContent=$("mainContent");
+const workspaceSelect=$("workspaceSelect");
+const workspaceLabel=$("workspaceLabel");
+const toast=$("toast");
+const ingestAlerts=$("ingestAlerts");
+const retryUrlsBtn=$("retryUrlsBtn");
+const retryFilesBtn=$("retryFilesBtn");
+const metricDocCount=$("metricDocCount");
+const metricLastIngest=$("metricLastIngest");
+const metricLastIngestDetail=$("metricLastIngestDetail");
+const metricBillingStatus=$("metricBillingStatus");
+const metricBillingDetail=$("metricBillingDetail");
+let activeSection="ask";
+let modalCleanup=null;
+let failedUrls=[];
+let failedFiles=[];
+
+const breadcrumbMap={
+  ask:["Home","Ask"],
+  browser:["Home","Sources"],
+  ingest:["Home","Ingest"],
+  admin:["Home","Admin"],
+};
+
+function updateBreadcrumb(section, extraTrail){
+  const base=breadcrumbMap[section] || ["Home"];
+  const trail=extraTrail ? base.concat(extraTrail) : base;
+  breadcrumb.innerHTML=trail.map((label,idx)=>`<span aria-current="${idx===trail.length-1?'page':'false'}">${label}</span>`).join("");
+  if(pageTitle){
+    pageTitle.textContent=trail[trail.length-1] || "Dashboard";
+  }
+}
+
+function setActiveSection(id){
+  activeSection=id;
+  sections.forEach(sec=>sec.classList.toggle("active", sec.id===id));
+  navLinks.forEach(link=>{
+    const isActive=link.dataset.nav===id;
+    link.classList.toggle("active", isActive);
+    if(isActive){link.setAttribute("aria-current","page");}
+    else{link.removeAttribute("aria-current");}
+  });
+  updateBreadcrumb(id);
+  history.replaceState(null,"",`#${id}`);
+  if(id==="browser"){ loadSources(); }
+  if(mainContent){ mainContent.focus({preventScroll:false}); }
+}
+
+navLinks.forEach(link=>{
+  link.addEventListener("click",e=>{
+    e.preventDefault();
+    const target=link.dataset.nav;
+    if(target) setActiveSection(target);
+  });
+});
+
+if(retryUrlsBtn){
+  retryUrlsBtn.addEventListener("click",()=>{
+    if(!failedUrls.length){
+      retryUrlsBtn.style.display="none";
+      return;
+    }
+    const urlsField = $("urls");
+    if(urlsField){
+      urlsField.value = failedUrls.join('\n');
+      urlsField.focus();
+    }
+    retryUrlsBtn.style.display="none";
+    showToast(`Prepared ${failedUrls.length} URL(s) for retry`);
+    failedUrls = [];
+  });
+}
+
+function showToast(message,type="success"){
+  toast.textContent=message;
+  toast.classList.remove("error","success");
+  toast.classList.add(type==="error"?"error":"success");
+  toast.style.display="block";
+  clearTimeout(showToast._timer);
+  showToast._timer=setTimeout(()=>toast.style.display="none",4000);
+}
+
+function setIngestAlert(message, tone="info"){
+  if(!ingestAlerts) return;
+  const palette = tone === "error"
+    ? {bg:"#fef2f2", border:"#fecaca", color:"#7f1d1d"}
+    : tone === "warning"
+      ? {bg:"#fffbeb", border:"#fde68a", color:"#92400e"}
+      : {bg:"#f1f5f9", border:"#cbd5f5", color:"#1e293b"};
+  ingestAlerts.style.display = "block";
+  ingestAlerts.style.background = palette.bg;
+  ingestAlerts.style.border = `1px solid ${palette.border}`;
+  ingestAlerts.style.color = palette.color;
+  ingestAlerts.textContent = message;
+}
+
+function clearIngestAlert(){
+  if(!ingestAlerts) return;
+  ingestAlerts.style.display="none";
+  ingestAlerts.textContent="";
+}
+
+function refreshLastIngestCard(){
+  if(!metricLastIngest || !metricLastIngestDetail){ return; }
+  if(!historyItems.length){
+    metricLastIngest.textContent = "No ingests yet";
+    metricLastIngestDetail.textContent = "Run ingest to populate your knowledge base.";
+    return;
+  }
+  const last = historyItems[historyItems.length - 1];
+  const when = new Date(last.timestamp);
+  const formatted = when.toLocaleString();
+  metricLastIngest.textContent = `${last.type === "url" ? "URL batch" : "File upload"}`;
+  metricLastIngestDetail.textContent = `${formatted} • ${last.chunks || 0} chunks`;
+}
+
+async function refreshBillingStatus(){
+  if(!metricBillingStatus || !metricBillingDetail){ return; }
+  try{
+    const resp = await fetch("/api/v1/admin/billing");
+    if(!resp.ok){
+      if(resp.status === 401 || resp.status === 403){
+        metricBillingStatus.textContent = "Restricted";
+        metricBillingDetail.textContent = "Sign in with admin access to view Stripe status.";
+      }else if(resp.status === 503){
+        metricBillingStatus.textContent = "Disabled";
+        metricBillingDetail.textContent = "Stripe not configured. Set STRIPE_API_KEY to enable billing.";
+      }else{
+        metricBillingStatus.textContent = "Unknown";
+        metricBillingDetail.textContent = `Billing endpoint returned ${resp.status}`;
+      }
+      return;
+    }
+    const data = await resp.json();
+    const org = Array.isArray(data) ? data[0] : null;
+    if(org){
+      const status = (org.billing_status || "unknown").replace(/_/g, " ");
+      metricBillingStatus.textContent = status;
+      if(org.subscription_expires_at){
+        metricBillingDetail.textContent = `Renews ${new Date(org.subscription_expires_at).toLocaleDateString()}`;
+      }else if(org.trial_ends_at){
+        metricBillingDetail.textContent = `Trial ends ${new Date(org.trial_ends_at).toLocaleDateString()}`;
+      }else{
+        metricBillingDetail.textContent = "No renewal date on file.";
+      }
+    }else{
+      metricBillingStatus.textContent = "Pending";
+      metricBillingDetail.textContent = "No organizations returned.";
+    }
+  }catch(e){
+    metricBillingStatus.textContent = "Unknown";
+    metricBillingDetail.textContent = e.message || "Unable to fetch billing status.";
+  }
+}
+
+async function refreshStatsCard(){
+  if(!metricDocCount){ return; }
+  try{
+    const r=await fetch("/api/stats");
+    if(!r.ok){
+      metricDocCount.textContent = "–";
+      return;
+    }
+    const d=await r.json();
+    metricDocCount.textContent = d.count ?? "0";
+  }catch(e){
+    metricDocCount.textContent = "–";
+  }
+}
+
+if(workspaceSelect){
+  const storedWorkspace=localStorage.getItem("activeWorkspace");
+  if(storedWorkspace){
+    workspaceSelect.value=storedWorkspace;
+  }
+  if(workspaceLabel){
+    const selected=workspaceSelect.options[workspaceSelect.selectedIndex];
+    workspaceLabel.textContent=selected?.text || workspaceSelect.value;
+  }
+  workspaceSelect.addEventListener("change",()=>{
+    const selected=workspaceSelect.options[workspaceSelect.selectedIndex];
+    localStorage.setItem("activeWorkspace", workspaceSelect.value);
+    if(workspaceLabel){
+      workspaceLabel.textContent=selected?.text || workspaceSelect.value;
+    }
+    showToast(`Workspace set to ${selected?.text || workspaceSelect.value}`);
+  });
+}
 
 function highlightText(text, query){
   if(!query || !text) return text;
@@ -127,10 +407,13 @@ $("askBtn").onclick=async()=>{
   const query = q.value||"";
   if(!query.trim()){alert("Enter a question first"); return;}
   const f=new FormData(); f.append("query", query); f.append("k","8");
-  ans.textContent = "Searching...";
+  ans.textContent = "";
   score.innerHTML = "";
   $("chunksSection").style.display = "none";
-  
+  const status=$("askStatus");
+  status.style.display="block";
+  $("askBtn").disabled=true;
+  $("askBtn").textContent="Searching…";
   try{
     const r=await fetch("/ask",{method:"POST",body:f}); const d=await r.json();
     ans.textContent=d.answer||""; 
@@ -170,12 +453,17 @@ $("askBtn").onclick=async()=>{
           </div>
         `;
       }).join('');
-      
-      // Store chunks data for toggle
       window.chunksData = d.chunks;
+    }else{
+      $("chunksSection").style.display="none";
+      $("chunksList").innerHTML = `<div class="empty-state">No supporting chunks found yet.</div>`;
     }
   }catch(e){
-    ans.textContent = `Error: ${e.message}`;
+    ans.textContent = `Error: ${e.message||'Request failed'}`;
+  }finally{
+    $("askBtn").disabled=false;
+    $("askBtn").textContent="Ask";
+    status.style.display="none";
   }
 };
 
@@ -200,14 +488,30 @@ $("ingestUrls").onclick=async()=>{
   uploadProgress.style.display = "block";
   progressBar.style.width = "50%";
   progressText.textContent = "Processing URLs...";
+  clearIngestAlert();
+  failedUrls = [];
+  if(retryUrlsBtn){ retryUrlsBtn.style.display="none"; }
   
   try{
-    const r=await fetch("/ingest/urls",{method:"POST",body:f}); 
+    const response=await fetch("/ingest/urls",{method:"POST",body:f});
+    const status=response.status;
+    const d=await response.json();
+    if(status === 402){
+      showStatus(d.detail || "Billing inactive. Enable a subscription to ingest new content.", "error");
+      progressText.textContent = "Billing required";
+      uploadProgress.style.display="none";
+      progressBar.style.width = "0%";
+      return;
+    }
+    if(status === 429){
+      showStatus(d.detail || "Workspace quota exceeded. Try again after usage resets.", "error");
+      uploadProgress.style.display="none";
+      progressBar.style.width = "0%";
+      return;
+    }
     progressBar.style.width = "100%";
-    const d=await r.json();
     log.textContent=JSON.stringify(d,null,2);
     
-    // Process results and show status
     let successCount = 0;
     let errorCount = 0;
     let totalChunks = 0;
@@ -217,14 +521,15 @@ $("ingestUrls").onclick=async()=>{
       if(result.error){
         errorCount++;
         errors.push(`${result.url}: ${result.error}`);
+        if(result.url){ failedUrls.push(result.url); }
       } else if(result.written > 0){
         successCount++;
         totalChunks += result.written || 0;
       } else {
         errorCount++;
         errors.push(`${result.url}: No chunks written (video may not have transcripts)`);
+        if(result.url){ failedUrls.push(result.url); }
       }
-      
       historyItems.push({
         type: "url",
         url: result.url,
@@ -233,7 +538,6 @@ $("ingestUrls").onclick=async()=>{
       });
     });
     
-    // Show status message
     if(successCount > 0 && errorCount === 0){
       showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} URL(s)`, "success");
       progressText.textContent = `Success! ${totalChunks} chunks ingested`;
@@ -241,16 +545,19 @@ $("ingestUrls").onclick=async()=>{
       showStatus(`⚠️ Partial success: ${totalChunks} chunks from ${successCount} URL(s), ${errorCount} failed. Check log for details.`, "error");
       progressText.textContent = `Partial: ${totalChunks} chunks, ${errorCount} failed`;
     } else {
-      const errorMsg = errors.length > 0 ? errors[0] : "No chunks were written";
+      const errorMsg = errors.length > 0 ? errors[0] : (d.detail || "No chunks were written");
       showStatus(`❌ Failed: ${errorMsg}`, "error");
       progressText.textContent = "Failed - see details below";
     }
     
+    if(countEl) countEl.textContent = d.count || 0;
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
+    await refreshStatsCard();
     
-    // Update stats
-    if(countEl) countEl.textContent = d.count || 0;
+    if(failedUrls.length && retryUrlsBtn){
+      retryUrlsBtn.style.display="inline-block";
+    }
     
     setTimeout(() => {
       uploadProgress.style.display = "none";
@@ -273,14 +580,33 @@ const progressText = $("progressText");
 const ingestHistory = $("ingestHistory");
 const statusMessage = $("statusMessage");
 
+if(retryFilesBtn){
+  retryFilesBtn.addEventListener("click",()=>{
+    if(!failedFiles.length){
+      retryFilesBtn.style.display="none";
+      return;
+    }
+    const dt = new DataTransfer();
+    failedFiles.forEach(file=>dt.items.add(file));
+    fileInput.files = dt.files;
+    updateFileList();
+    showToast(`Ready to retry ${failedFiles.length} file(s). Click Upload when ready.`);
+    retryFilesBtn.style.display="none";
+    failedFiles = [];
+  });
+}
+
 function showStatus(message, type="success"){
   statusMessage.style.display = "block";
   statusMessage.textContent = message;
   statusMessage.style.background = type === "success" ? "#d4edda" : "#f8d7da";
   statusMessage.style.color = type === "success" ? "#155724" : "#721c24";
   statusMessage.style.border = `1px solid ${type === "success" ? "#c3e6cb" : "#f5c6cb"}`;
+  setIngestAlert(message, type === "success" ? "info" : "error");
+  showToast(message, type === "success" ? "success" : "error");
   setTimeout(() => {
     statusMessage.style.display = "none";
+    if(type === "success"){ clearIngestAlert(); }
   }, 10000);
 }
 
@@ -309,14 +635,15 @@ let historyItems = JSON.parse(localStorage.getItem('ingestHistory') || '[]');
 function updateHistory(){
   if(historyItems.length === 0){
     ingestHistory.innerHTML = '<p class="small" style="color:#666">No ingestion history yet.</p>';
-    return;
-  }
-  ingestHistory.innerHTML = historyItems.slice(-10).reverse().map(item => `
+  }else{
+    ingestHistory.innerHTML = historyItems.slice(-10).reverse().map(item => `
     <div style="border-bottom:1px solid #eee;padding:0.5rem 0;font-size:0.9em">
       <strong>${item.type}</strong>: ${item.name || item.url || 'Unknown'}
       <div class="small" style="color:#666">${new Date(item.timestamp).toLocaleString()} | ${item.chunks || 0} chunks</div>
     </div>
   `).join('');
+  }
+  refreshLastIngestCard();
 }
 updateHistory();
 
@@ -327,16 +654,32 @@ $("upload").onclick=async()=>{
   uploadProgress.style.display = "block";
   progressBar.style.width = "30%";
   progressText.textContent = "Uploading files...";
+  clearIngestAlert();
+  failedFiles = [];
+  if(retryFilesBtn){ retryFilesBtn.style.display="none"; }
   
   try{
-    const r=await fetch("/ingest/files",{method:"POST",body:f}); 
+    const response=await fetch("/ingest/files",{method:"POST",body:f});
+    const status=response.status;
+    const d=await response.json();
+    if(status === 402){
+      showStatus(d.detail || "Billing inactive. Enable a subscription to ingest new content.", "error");
+      progressText.textContent = "Billing required";
+      uploadProgress.style.display="none";
+      progressBar.style.width = "0%";
+      return;
+    }
+    if(status === 429){
+      showStatus(d.detail || "Workspace quota exceeded. Try again later.", "error");
+      uploadProgress.style.display="none";
+      progressBar.style.width = "0%";
+      return;
+    }
     progressBar.style.width = "70%";
     progressText.textContent = "Processing...";
-    const d=await r.json();
-    progressBar.style.width = "100%";
     log.textContent=JSON.stringify(d,null,2);
+    progressBar.style.width = "100%";
     
-    // Process results and show status
     let successCount = 0;
     let errorCount = 0;
     let totalChunks = 0;
@@ -347,14 +690,15 @@ $("upload").onclick=async()=>{
       if(result.error){
         errorCount++;
         errors.push(`${file.name}: ${result.error}`);
+        failedFiles.push(file);
       } else if(result.written > 0){
         successCount++;
         totalChunks += result.written || 0;
       } else {
         errorCount++;
         errors.push(`${file.name}: No chunks written`);
+        failedFiles.push(file);
       }
-      
       historyItems.push({
         type: "file",
         name: file.name,
@@ -363,7 +707,6 @@ $("upload").onclick=async()=>{
       });
     });
     
-    // Show status message
     if(successCount > 0 && errorCount === 0){
       showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} file(s)`, "success");
       progressText.textContent = `Success! ${totalChunks} chunks ingested`;
@@ -371,22 +714,32 @@ $("upload").onclick=async()=>{
       showStatus(`⚠️ Partial success: ${totalChunks} chunks from ${successCount} file(s), ${errorCount} failed. Check log for details.`, "error");
       progressText.textContent = `Partial: ${totalChunks} chunks, ${errorCount} failed`;
     } else {
-      const errorMsg = errors.length > 0 ? errors[0] : "No chunks were written";
+      const errorMsg = errors.length > 0 ? errors[0] : (d.detail || "No chunks were written");
       showStatus(`❌ Failed: ${errorMsg}`, "error");
       progressText.textContent = "Failed - see details below";
     }
     
+    if(countEl) countEl.textContent = d.count || 0;
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
+    await refreshStatsCard();
     
-    // Update stats
-    if(countEl) countEl.textContent = d.count || 0;
+    if(failedFiles.length && retryFilesBtn){
+      const dt = new DataTransfer();
+      failedFiles.forEach(file=>dt.items.add(file));
+      fileInput.files = dt.files;
+      updateFileList();
+      retryFilesBtn.style.display="inline-block";
+    } else {
+      setTimeout(() => {
+        fileInput.value = "";
+        updateFileList();
+      }, 500);
+    }
     
     setTimeout(() => {
       uploadProgress.style.display = "none";
       progressBar.style.width = "0%";
-      fileInput.value = "";
-      updateFileList();
     }, 5000);
   }catch(e){
     progressText.textContent = `Error: ${e.message}`;
@@ -424,18 +777,6 @@ mic.onclick=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognit
   if(!on){rec.start(); on=true; mic.textContent='🛑 Stop listening';} else {rec.stop();}
 };
 
-// Tab switch
-const tab=(id)=>{ 
-  for(const s of ["ask","browser","ingest"]){ $(s).classList.toggle("active", s===id);} 
-  for(const t of ["tabAsk","tabBrowser","tabIngest"]){ 
-    const tabId = "tab"+id.charAt(0).toUpperCase()+id.slice(1);
-    $(t).classList.toggle("active", t===tabId);
-  }
-};
-$("tabAsk").onclick=()=>tab("ask"); 
-$("tabBrowser").onclick=()=>{tab("browser"); loadSources();};
-$("tabIngest").onclick=()=>tab("ingest");
-
 // Browser functionality
 let allSources = [];
 async function loadSources(){
@@ -457,7 +798,7 @@ function renderSources(){
     (s.url || "").toLowerCase().includes(filter)
   );
   if(filtered.length === 0){
-    $("sourcesList").innerHTML = `<p class="small">No sources found${filter ? ' matching filter' : ''}.</p>`;
+    $("sourcesList").innerHTML = `<div class="empty-state">No sources found${filter ? ' matching filter' : ''}.</div>`;
     return;
   }
   $("sourcesList").innerHTML = filtered.map(s => `
@@ -493,10 +834,10 @@ async function viewSource(id){
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;overflow:auto;padding:2rem';
     modal.innerHTML = `
-      <div style="background:white;max-width:800px;margin:0 auto;padding:2rem;border-radius:8px">
+      <div role="dialog" aria-modal="true" style="background:white;max-width:800px;margin:0 auto;padding:2rem;border-radius:12px;position:relative">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
           <h2>Document Viewer</h2>
-          <button onclick="(function(btn){ const overlay = btn.closest('div[style*=\"position:fixed\"]'); if(overlay){ overlay.remove(); const list = document.getElementById('sourcesList'); if(list){ list.scrollIntoView({behavior:'smooth'}); list.focus?.(); }}})(this)" class="btn">Close</button>
+          <button id="modalCloseBtn" class="btn" type="button">Back to sources</button>
         </div>
         <div style="max-height:70vh;overflow:auto">
           ${chunks.map((c,idx) => `
@@ -512,6 +853,21 @@ async function viewSource(id){
       </div>
     `;
     document.body.appendChild(modal);
+    updateBreadcrumb('browser',['Chunk Preview']);
+    let lastFocused=document.activeElement;
+    const closeModal=()=>{
+      document.removeEventListener('keydown', escHandler);
+      modal.remove();
+      updateBreadcrumb(activeSection);
+      const list=$("sourcesList");
+      if(list){ list.scrollIntoView({behavior:'smooth'}); list.focus?.(); }
+      if(lastFocused){ lastFocused.focus?.(); }
+      modalCleanup=null;
+    };
+    const escHandler=(evt)=>{ if(evt.key==="Escape"){ closeModal(); } };
+    modalCleanup=closeModal;
+    document.getElementById('modalCloseBtn').onclick=closeModal;
+    document.addEventListener('keydown',escHandler);
   }catch(e){
     alert(`Error loading source: ${e.message}`);
   }
@@ -529,6 +885,35 @@ async function deleteSource(id){
 }
 window.viewSource = viewSource;
 window.deleteSource = deleteSource;
+window.addEventListener('keydown', (evt)=>{
+  if(evt.key==="Escape" && modalCleanup){
+    modalCleanup();
+  }
+});
+
+document.addEventListener('keydown',(evt)=>{
+  const meta = evt.metaKey || evt.ctrlKey;
+  if(meta && evt.key === 'Enter'){
+    if(activeSection === 'ask'){
+      evt.preventDefault();
+      $("askBtn")?.click();
+    }
+  }
+  if(meta && (evt.key === 'k' || evt.key === 'K')){
+    evt.preventDefault();
+    if(activeSection === 'browser'){
+      $("sourceFilter")?.focus();
+    }else{
+      q?.focus();
+    }
+  }
+});
+
+window.addEventListener("DOMContentLoaded",()=>{
+  const hash=(location.hash||"#ask").replace("#","");
+  if(breadcrumbMap[hash]) setActiveSection(hash);
+  else setActiveSection("ask");
+});
 
 // Authentication state
 let currentUser = null;
@@ -587,6 +972,9 @@ if(window.location.search.includes("error=auth_failed")){
 (async()=>{
   setupAuthHandlers();
   await checkAuth();
+  await refreshStatsCard();
+  await refreshBillingStatus();
+  refreshLastIngestCard();
   try{
     const r=await fetch("/api/stats"); const d=await r.json();
     if(countEl) countEl.textContent = d.count || 0;

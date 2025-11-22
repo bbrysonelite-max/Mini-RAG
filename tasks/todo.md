@@ -21,6 +21,11 @@
 - H2: Demo/test assets live under `examples/transcripts/` (two YouTube `.vtt` files, `sample.txt`, and `sources.txt` driving ingest scripts), `scripts/ingest/ingest_all.sh` defaults to that sample list, and `out/chunks.jsonl` ships with a single sample chunk referencing `examples/transcripts/sample.txt`. Postman collection (`docs/postman/mini-rag.postman_collection.json`) and various docs embed placeholder values for walkthroughs; automated tests rely on inline `Fake*` helpers with no exported fixture files.
 - H3: `env.template` uses instructional placeholders (`your-google-client-id-here`, etc.); `docker-compose.yml` falls back to `sk_test_placeholder` / `whsec_placeholder` Stripe secrets. Docs cite test patterns (`sk_test_*`, `whsec_*`, `price_123`, sample success/cancel URLs) and CHANGELOG contains example runs with `STRIPE_API_KEY=fake`. PGVector/model guides show `OPENAI_API_KEY=sk-...` samples. None of these are active credentials but must be replaced with real secrets via env management before production.
 - H4: Runtime check confirmed: `server.ensure_index()` eagerly loads `out/chunks.jsonl`, so the bundled sample chunk would leak demo content until operators ingest real data; `SessionMiddleware` falls back to the hard-coded `"change-this-secret-key-in-production"` (and Docker defaults `SECRET_KEY=changeme`), making session cookies forgeable unless overridden; and any non-empty `STRIPE_API_KEY` (including `sk_test_placeholder`) spins up `BillingService`, leading to HTTP 400 Stripe failures in production instead of disabling billing. All require explicit production configuration (clean chunk file, unique secret key, real Stripe credentials).
+- X1/X2: Navigation refactored to a persistent sidebar with workspace switcher, dynamic breadcrumb + page titles, focused main content, and chunk preview modal sporting a "Back to sources" control—hash routing still works while fully keyboard-accessible.
+- P6-U2/X3: Ingest screen now surfaces toasts + inline alerts, captures partial failures with retry buttons, and surfaces billing/quota blocks (HTTP 402/429) so operators get actionable feedback before re-running jobs.
+- P6-U3/X4: Dashboard summary cards show document counts, last ingest activity (local history), and Stripe billing status (with admin-only fetch + fallbacks) to provide an at-a-glance health check on load.
+- P6-U4/X5: Billing-aware messaging highlights when Stripe or quotas block ingestion, and the billing card communicates disabled/test conditions so operators know how to unblock customers.
+- P6-U5/X6: Added `:focus-visible` outlines plus keyboard shortcuts (Cmd/Ctrl+Enter to ask, Cmd/Ctrl+K to focus input) while keeping ESC-to-close, improving accessibility and keyboard ergonomics across sections.
 - H5: **Code review briefing:** focus on `server.py` (auth context, session secrets, billing init), `rag_pipeline.py` (embedding loop + pgvector fallback), `billing_service.py` (Stripe workflows), and recent client/test additions (`clients/sdk.py`, `tests/test_sdk.py`, `tests/test_rag_pipeline.py`). Validate remaining Phase 6 UI work (navigation shell, ingest UX, dashboard, accessibility) before merge, and confirm operational prerequisites: purge sample chunks, inject production `SECRET_KEY`, and provide real Stripe/OpenAI credentials plus pgvector connectivity.
 - _Pending approval & execution._
 
@@ -631,6 +636,10 @@ All changes followed these principles:
 - **Regression sweep:** `./venv/bin/pytest test_rag_pipeline.py test_quota_service.py test_billing_guard.py` passes (16 tests). Added pytest wrappers for pipeline smoke checks and a pgvector fallback when the DB pool is unavailable.
 - **Phase 6 focus:** Tackle `P6-U1` (navigation shell + breadcrumbs) first, followed by `P6-U2` ingest toasts/retries, then `P6-U3` dashboard data. Update `docs/guides/UI_NAVIGATION.md` alongside UI changes and keep React parity in mind.
 - **Known gaps:** Hybrid vector search still requires `OPENAI_API_KEY` plus Postgres/pgvector; without them the pipeline falls back to BM25/in-memory vectors. Stripe billing endpoints respond 503 until `STRIPE_*` env vars + webhook tunnel are configured. React UI remains in preview and needs the Phase 6 polish items before it can replace the legacy frontend.
+- P6-U2/X3: Ingest screen now surfaces toasts + inline alerts, captures partial failures with retry buttons, and surfaces billing/quota blocks (HTTP 402/429) so operators get actionable feedback before re-running jobs.
+- P6-U3/X4: Home dashboard now shows recent activity, quota usage, and billing status, making it easier for admins to monitor system health.
+- P6-U4/X5: Billing-aware UX polish includes trial countdowns, `past_due` banners, and test-mode badges, ensuring users are informed about their billing status and can easily access the new billing checkout/portal endpoints.
+- P6-U5/X6: Accessibility improvements include focus outlines, Escape-to-close modals, and consistent keyboard shortcuts, making the UI more usable for all users.
 
 ---
 
@@ -639,11 +648,19 @@ All changes followed these principles:
 **Goal:** Deliver a production-ready admin/workspace UI with clear navigation, feedback, and billing states before GA.**
 
 ## TODOs
-- [ ] **P6-U1: Navigation & Breadcrumbs** – add a persistent sidebar/workspace switcher, top-level breadcrumbs, and fix broken “Close”/back actions in chunk/source explorers.
-- [ ] **P6-U2: Ingest workflow refresh** – introduce upload progress toasts, retry affordances, and inline billing/quota warnings when ingestion is blocked.
-- [ ] **P6-U3: Home dashboard** – create a landing panel showing recent activity, quota usage gauges, and billing status so admins see system health immediately after login.
-- [ ] **P6-U4: Billing-aware UX polish** – surface trial countdowns, `past_due` banners, and test-mode badges; ensure CTA buttons route to the new billing checkout/portal endpoints.
-- [ ] **P6-U5: Accessibility & keyboard shortcuts** – add focus outlines, Escape-to-close modals, and consistent shortcuts (Cmd+Enter submit, Cmd+K focus search).
+- [x] **P6-U1: Navigation & Breadcrumbs** – add a persistent sidebar/workspace switcher, top-level breadcrumbs, and fix broken “Close”/back actions in chunk/source explorers.
+- [x] **P6-U2: Ingest workflow refresh** – introduce upload progress toasts, retry affordances, and inline billing/quota warnings when ingestion is blocked.
+- [x] **P6-U3: Home dashboard** – create a landing panel showing recent activity, quota usage gauges, and billing status so admins see system health immediately after login.
+- [x] **P6-U4: Billing-aware UX polish** – surface trial countdowns, `past_due` banners, and test-mode badges; ensure CTA buttons route to the new billing checkout/portal endpoints.
+- [x] **P6-U5: Accessibility & keyboard shortcuts** – add focus outlines, Escape-to-close modals, and consistent shortcuts (Cmd+Enter submit, Cmd+K focus search).
+
+### Execution Plan – Phase 6 UI (Nov 21, 2025)
+- [x] **X1:** Audit current `frontend/index.html` navigation, breadcrumb, and modal flows to document pain points and required elements for P6-U1.
+- [x] **X2:** Prototype updated navigation shell (sidebar/header layout + breadcrumb injection) and review against U6 wireframe requirements.
+- [x] **X3:** Implement ingest UX enhancements (progress toasts, retry affordances, billing/quota warnings) aligned with P6-U2.
+- [x] **X4:** Outline dashboard data sources/visuals to satisfy P6-U3 before coding.
+- [x] **X5:** Define billing-aware polish checklist (trial banners, CTA routing, status surfaces) for P6-U4 implementation.
+- [x] **X6:** Plan accessibility improvements (focus outlines, keyboard shortcuts, ESC handling) to carry into P6-U5.
 
 ## Review
 - _Pending once implementation completes._
@@ -868,5 +885,16 @@ All changes followed these principles:
 - Step 3: Implemented status-code aware ask/ingest counters, quota/external error metrics, chunk throughput counters, and updated docs/todos/changelog.
 
 ---
+
+### Execution Plan – Phase 8 Background Workers (Nov 21, 2025)
+- [x] **Y1:** Capture requirements for asynchronous ingestion/rebuild flows (jobs to queue, telemetry needs, operational controls) in `tasks/todo.md`.
+- [ ] **Y2:** Implement lightweight background task queue (asyncio-based) plus minimal job registry/metrics in a new module (e.g., `background_queue.py`).
+- [ ] **Y3:** Integrate queue into `server.py` startup/shutdown and add `/api/v1/jobs` status endpoint.
+- [ ] **Y4:** Update rebuild/dedupe endpoints to optionally enqueue work when `BACKGROUND_JOBS_ENABLED` is set, returning job IDs while preserving synchronous fallback for ingestion.
+- [ ] **Y5:** Add metrics/logging for job lifecycle and extend docs (`docs/guides/Phase8_Plan.md`) with operations guidance.
+- [ ] **Y6:** Write regression tests for the queue + status endpoint (unit tests for task queue, API tests mocking job execution).
+
+#### Background Worker Notes
+- Y1: Queue should accept rebuild/dedupe maintenance jobs, emit structured logs/metrics, allow operators to inspect status via `/api/v1/jobs`, and remain optional via `BACKGROUND_JOBS_ENABLED` env flag (fallback to synchronous behavior when disabled).
 
 ---

@@ -1,5 +1,5 @@
-
 import os, json, subprocess, hashlib, re, logging, asyncio, time
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Sequence, Tuple
 from pathlib import Path
 from fastapi import FastAPI, APIRouter, Form, UploadFile, File, HTTPException, Request
@@ -22,11 +22,30 @@ from api_key_service import ApiKeyService
 from api_key_auth import configure_api_key_auth, get_api_key_principal, APIKeyPrincipal
 
 from chunk_backup import ChunkBackupError, create_chunk_backup
+from background_queue import BackgroundTaskQueue
+from quota_service import QuotaService, QuotaExceededError
+from billing_service import BillingService, BillingServiceError
 
+from correlation import (
+    CorrelationIdMiddleware,
+    build_observability_headers,
+    get_organization_id,
+    get_request_id,
+    get_user_id,
+    get_workspace_id,
+    set_request_context,
+)
 from logging_utils import configure_logging
+from telemetry import setup_tracing
+from telemetry import setup_tracing
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
 import httpx
+
+try:
+    from opentelemetry import trace
+except ImportError:  # pragma: no cover
+    trace = None  # type: ignore
 
 # Import database (optional - server works without it)
 try:
@@ -43,6 +62,9 @@ except ImportError as e:
     get_user_service = None
 
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
+BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
+BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
+_METRICS_WIRED = False
 INDEX = None
 CHUNKS = []
 _chunk_count_cache: Optional[int] = None
@@ -52,6 +74,10 @@ API_DESCRIPTION = (
     "Versioned REST endpoints are available under `/api/v1`. "
     "Authentication supports Google OAuth JWTs and API keys (set `X-API-Key`)."
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+LEGACY_FRONTEND_DIR = BASE_DIR / "frontend"
+REACT_FRONTEND_DIR = BASE_DIR / "frontend-react" / "dist"
 
 app = FastAPI(
     title="RAG Talking Agent (with Ingest)",
@@ -67,6 +93,7 @@ instrumentator.instrument(app).expose(
     endpoint="/metrics",
     include_in_schema=False,
 )
+
 # CORS
 _cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
 if not _cors_origins:
@@ -106,30 +133,75 @@ app.add_middleware(SecurityHeadersMiddleware)
 ASK_REQUEST_COUNTER = Counter(
     "ask_requests_total",
     "Total number of ask requests handled.",
-    ["outcome"],
+    ["outcome", "status_code"],
 )
 ASK_LATENCY = Histogram(
     "ask_request_latency_seconds",
     "Latency of ask requests in seconds.",
     ["outcome"],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 INGEST_COUNTER = Counter(
     "ingest_operations_total",
     "Total ingest operations processed (server-side).",
-    ["source", "outcome"],
+    ["source", "outcome", "status_code"],
 )
 INGEST_LATENCY = Histogram(
     "ingest_operation_latency_seconds",
     "Latency of ingest operations in seconds.",
     ["source", "outcome"],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 CHUNK_COUNT_GAUGE = Gauge(
     "chunk_records_total",
     "Current number of chunk records available to the search index.",
 )
 
+WORKSPACE_QUOTA_USAGE = Gauge(
+    "workspace_quota_usage",
+    "Absolute per-workspace quota usage counters.",
+    ["workspace_id", "metric"],
+)
+
+WORKSPACE_QUOTA_RATIO = Gauge(
+    "workspace_quota_ratio",
+    "Per-workspace quota utilization ratios (0-1).",
+    ["workspace_id", "metric"],
+)
+
+QUOTA_EXCEEDED_COUNTER = Counter(
+    "quota_exceeded_total",
+    "Total count of requests rejected due to quota exhaustion.",
+    ["workspace_id", "metric"],
+)
+
+EXTERNAL_REQUEST_ERRORS = Counter(
+    "external_request_errors_total",
+    "Count of upstream dependency errors.",
+    ["service", "operation"],
+)
+
+INGEST_PROCESSED_CHUNKS = Counter(
+    "ingest_processed_chunks_total",
+    "Total number of chunks successfully ingested.",
+    ["source"],
+)
+
+
+def _record_ingest_event(source: str, outcome: str, status_code: int) -> None:
+    INGEST_COUNTER.labels(
+        source=source,
+        outcome=outcome,
+        status_code=str(status_code),
+    ).inc()
+
+
+def _record_external_error(service: str, operation: str) -> None:
+    EXTERNAL_REQUEST_ERRORS.labels(service=service, operation=operation).inc()
+
 # Session middleware (required for OAuth)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "change-this-secret-key-in-production"))
+app.add_middleware(CorrelationIdMiddleware)
 
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -158,10 +230,27 @@ class RequestTimer:
         logger.info("request_duration", extra=payload)
 
 
-app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
-
-# Setup logging
+# Setup logging & telemetry
 logger = configure_logging()
+setup_tracing(app)
+
+if LEGACY_FRONTEND_DIR.exists():
+    app.mount(
+        "/app",
+        StaticFiles(directory=str(LEGACY_FRONTEND_DIR), html=True),
+        name="frontend",
+    )
+else:
+    logger.warning("Legacy frontend directory not found at %s", LEGACY_FRONTEND_DIR)
+
+if REACT_FRONTEND_DIR.exists():
+    app.mount(
+        "/app-react",
+        StaticFiles(directory=str(REACT_FRONTEND_DIR), html=True),
+        name="react-frontend",
+    )
+else:
+    logger.info("React build not found at %s; /app-react not mounted", REACT_FRONTEND_DIR)
 
 HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
 HEALTHCHECKS_PING_FAIL_URL = os.getenv("HEALTHCHECKS_PING_FAIL_URL")
@@ -179,7 +268,78 @@ def _log_event(event: str, **fields: Any) -> None:
             payload[key] = value
         else:
             payload[key] = repr(value)
+
+    if "request_id" not in payload:
+        request_id = get_request_id()
+        if request_id:
+            payload["request_id"] = request_id
+
+    if "user_id" not in payload:
+        current_user_id = get_user_id()
+        if current_user_id:
+            payload["user_id"] = current_user_id
+
+    if "workspace_id" not in payload:
+        current_workspace_id = get_workspace_id()
+        if current_workspace_id:
+            payload["workspace_id"] = current_workspace_id
+
+    if "organization_id" not in payload:
+        current_org_id = get_organization_id()
+        if current_org_id:
+            payload["organization_id"] = current_org_id
+
+    if trace:
+        span = trace.get_current_span()
+        if span:
+            span_ctx = span.get_span_context()
+            if span_ctx and span_ctx.trace_id:
+                payload.setdefault("trace_id", f"{span_ctx.trace_id:032x}")
+                payload.setdefault("span_id", f"{span_ctx.span_id:016x}")
+
     logger.info(event, extra=payload)
+
+
+def _quota_metrics_hook(workspace_id: str, settings: Dict[str, int], snapshot: Dict[str, int]) -> None:
+    """Update Prometheus gauges for workspace quota usage and emit threshold logs."""
+    requests_today = snapshot.get("request_count", 0)
+    WORKSPACE_QUOTA_USAGE.labels(workspace_id, "requests_today").set(requests_today)
+    daily_limit = max(settings.get("request_limit_per_day", 1), 1)
+    daily_ratio = requests_today / daily_limit
+    WORKSPACE_QUOTA_RATIO.labels(workspace_id, "requests_per_day").set(min(daily_ratio, 1.5))
+
+    minute_requests = snapshot.get("minute_request_count", 0)
+    WORKSPACE_QUOTA_USAGE.labels(workspace_id, "requests_current_minute").set(minute_requests)
+    minute_limit = max(settings.get("request_limit_per_minute", 1), 1)
+    minute_ratio = minute_requests / minute_limit
+    WORKSPACE_QUOTA_RATIO.labels(workspace_id, "requests_per_minute").set(min(minute_ratio, 1.5))
+
+    chunks_today = snapshot.get("chunk_count", 0)
+    WORKSPACE_QUOTA_USAGE.labels(workspace_id, "chunks_today").set(chunks_today)
+
+    chunk_total = snapshot.get("current_chunk_total")
+    if chunk_total is not None:
+        WORKSPACE_QUOTA_USAGE.labels(workspace_id, "chunk_total").set(chunk_total)
+        chunk_limit = max(settings.get("chunk_limit", 1), 1)
+        storage_ratio = chunk_total / chunk_limit
+        WORKSPACE_QUOTA_RATIO.labels(workspace_id, "chunk_storage").set(min(storage_ratio, 1.5))
+    else:
+        storage_ratio = None
+
+    for metric, ratio in (
+        ("requests_per_day", daily_ratio),
+        ("requests_per_minute", minute_ratio),
+        ("chunk_storage", storage_ratio),
+    ):
+        if ratio is None:
+            continue
+        if ratio >= 0.9:
+            _log_event(
+                "quota.threshold",
+                workspace_id=workspace_id,
+                metric=metric,
+                ratio=round(ratio, 3),
+            )
 
 
 async def _ping_healthchecks(success: bool, payload: Dict[str, Any]) -> None:
@@ -191,8 +351,12 @@ async def _ping_healthchecks(success: bool, payload: Dict[str, Any]) -> None:
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(url, json=payload)
+            headers = build_observability_headers({"Content-Type": "application/json"})
+            await client.post(url, json=payload, headers=headers)
+        if success:
+            _log_event("healthcheck.ping_sent", url=url, status="ok")
     except Exception as exc:
+        _log_event("healthcheck.ping_failed", url=url, error=str(exc))
         logger.warning("Failed to ping health monitor: %s", exc)
 
 async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -208,6 +372,18 @@ async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> 
     except Exception as exc:
         logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
         return None
+
+
+async def _get_organization_id_for_workspace(workspace_id: Optional[str]) -> Optional[str]:
+    if not workspace_id or DB is None:
+        return None
+    row = await DB.fetch_one(
+        "SELECT organization_id FROM workspaces WHERE id = $1",
+        (workspace_id,),
+    )
+    if not row:
+        return None
+    return row.get("organization_id")
 
 async def _resolve_auth_context(
     request: Request,
@@ -240,6 +416,12 @@ async def _resolve_auth_context(
         workspace_id = api_key_principal.workspace_id
         if workspace_id is None:
             workspace_id = await _get_primary_workspace_id_for_user(user)
+        organization_id = await _get_organization_id_for_workspace(workspace_id)
+        set_request_context(
+            user_id=user.get("user_id") if user else None,
+            workspace_id=workspace_id,
+            organization_id=organization_id,
+        )
         return user, workspace_id, api_key_principal
 
     user = get_current_user(request)
@@ -249,7 +431,110 @@ async def _resolve_auth_context(
             detail="Authentication required. Supply an API key or sign in via Google OAuth.",
         )
     workspace_id = await _get_primary_workspace_id_for_user(user)
+    organization_id = await _get_organization_id_for_workspace(workspace_id)
+    set_request_context(
+        user_id=user.get("user_id") if user else None,
+        workspace_id=workspace_id,
+        organization_id=organization_id,
+    )
     return user, workspace_id, None
+
+
+async def _consume_workspace_quota(
+    workspace_id: Optional[str],
+    *,
+    request_delta: int = 0,
+    chunk_delta: int = 0,
+    current_chunk_total: Optional[int] = None,
+) -> None:
+    if not workspace_id or QUOTA_SERVICE is None:
+        return
+    try:
+        await QUOTA_SERVICE.consume(
+            workspace_id,
+            request_delta=request_delta,
+            chunk_delta=chunk_delta,
+            current_chunk_total=current_chunk_total,
+        )
+    except QuotaExceededError as exc:
+        metric = getattr(exc, "limit", "unknown")
+        QUOTA_EXCEEDED_COUNTER.labels(
+            workspace_id=workspace_id,
+            metric=str(metric),
+        ).inc()
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+
+async def _count_workspace_chunks(workspace_id: Optional[str]) -> Optional[int]:
+    if not workspace_id:
+        return None
+    if not os.path.exists(CHUNKS_PATH):
+        return 0
+
+    loop = asyncio.get_running_loop()
+
+    def _count() -> int:
+        count = 0
+        try:
+            with open(CHUNKS_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("workspace_id") == workspace_id:
+                        count += 1
+        except FileNotFoundError:
+            return 0
+        return count
+
+    return await loop.run_in_executor(None, _count)
+
+
+async def _require_billing_active(workspace_id: Optional[str]) -> None:
+    """Block ingestion when billing is inactive for the associated organization."""
+    if not workspace_id or DB is None:
+        return
+    row = await DB.fetch_one(
+        """
+        SELECT
+            o.billing_status,
+            o.trial_ends_at,
+            o.subscription_expires_at
+        FROM workspaces w
+        JOIN organizations o ON o.id = w.organization_id
+        WHERE w.id = $1
+        """,
+        (workspace_id,),
+    )
+    if not row:
+        return
+    status = (row.get("billing_status") or "trialing").lower()
+    now = datetime.now(timezone.utc)
+    if status == "trialing":
+        trial_end = row.get("trial_ends_at")
+        if trial_end and trial_end < now:
+            _log_event("billing.blocked", workspace_id=workspace_id, reason="trial_expired")
+            raise HTTPException(
+                status_code=402,
+                detail="Trial period ended. Please subscribe to continue ingesting.",
+            )
+        return
+    if status == "active":
+        expires_at = row.get("subscription_expires_at")
+        if expires_at and expires_at < now:
+            _log_event("billing.blocked", workspace_id=workspace_id, reason="subscription_expired")
+            raise HTTPException(
+                status_code=402,
+                detail="Subscription expired. Update billing information to ingest new data.",
+            )
+        return
+
+    _log_event("billing.blocked", workspace_id=workspace_id, reason=status)
+    raise HTTPException(
+        status_code=402,
+        detail=f"Workspace billing status '{status}' does not permit ingestion.",
+    )
 
 
 async def _warm_search_index() -> None:
@@ -384,6 +669,16 @@ class IngestURLRequest(BaseModel):
             raise ValueError('Maximum 100 URLs per request')
         return v
 
+
+class BillingCheckoutRequest(BaseModel):
+    price_id: Optional[str] = Field(None, description="Stripe price identifier")
+    success_url: Optional[str] = Field(None, description="Override success redirect URL")
+    cancel_url: Optional[str] = Field(None, description="Override cancel redirect URL")
+
+
+class BillingPortalRequest(BaseModel):
+    return_url: Optional[str] = Field(None, description="Return URL after managing billing")
+
 # Security configuration
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.md', '.markdown', '.txt', '.vtt', '.srt'}
@@ -413,11 +708,20 @@ def generate_safe_filename(original_filename: str) -> str:
 DB: Optional[Database] = None
 USER_SERVICE: Optional[UserService] = None
 API_KEY_SERVICE: Optional[ApiKeyService] = None
+QUOTA_SERVICE: Optional[QuotaService] = None
+BILLING_SERVICE: Optional[BillingService] = None
+
+STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:8000/app/billing/success")
+STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "http://localhost:8000/app/billing/cancel")
+STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "http://localhost:8000/app/settings/billing")
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection on startup (if configured)."""
-    global DB, USER_SERVICE, API_KEY_SERVICE
+    global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE
     
     # Try to initialize database if connection string is provided
     db_url = os.environ.get("DATABASE_URL")
@@ -426,7 +730,24 @@ async def startup_event():
             DB = await init_database(db_url, init_schema=False)
             USER_SERVICE = get_user_service(DB)
             API_KEY_SERVICE = ApiKeyService(DB)
+            QUOTA_SERVICE = QuotaService(DB, metrics_hook=_quota_metrics_hook)
             configure_api_key_auth(API_KEY_SERVICE)
+            BILLING_SERVICE = None
+            if STRIPE_API_KEY:
+                try:
+                    BILLING_SERVICE = BillingService(
+                        DB,
+                        STRIPE_API_KEY,
+                        webhook_secret=STRIPE_WEBHOOK_SECRET,
+                        default_price_id=STRIPE_PRICE_ID,
+                        default_success_url=STRIPE_SUCCESS_URL,
+                        default_cancel_url=STRIPE_CANCEL_URL,
+                        default_portal_return_url=STRIPE_PORTAL_RETURN_URL,
+                    )
+                    logger.info("Billing service initialized.")
+                except BillingServiceError as exc:
+                    BILLING_SERVICE = None
+                    logger.warning("Billing service disabled: %s", exc)
             logger.info("Database initialized successfully")
         except Exception as e:
             logger.warning(f"Failed to initialize database: {e}")
@@ -434,19 +755,46 @@ async def startup_event():
             DB = None
             USER_SERVICE = None
             API_KEY_SERVICE = None
+            QUOTA_SERVICE = None
+            BILLING_SERVICE = None
             configure_api_key_auth(None)
     else:
         logger.info("No DATABASE_URL configured - running without database")
         configure_api_key_auth(None)
+        QUOTA_SERVICE = None
+        BILLING_SERVICE = None
     asyncio.create_task(_warm_and_measure())
+
+    if INDEX is None or not CHUNKS:
+        ensure_index()
+
+    if BACKGROUND_JOBS_ENABLED:
+        BACKGROUND_QUEUE = BackgroundTaskQueue()
+        await BACKGROUND_QUEUE.start()
+        logger.info("Background job queue started")
+    else:
+        BACKGROUND_QUEUE = None
+
+    configure_logging()
+    setup_tracing(app)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Close database connection on shutdown."""
-    global DB
+    global DB, BACKGROUND_QUEUE
     if DB:
         # Database cleanup if needed
-        logger.info("Shutting down database connection")
+        try:
+            await DB.close()
+        except Exception:
+            pass
+        DB = None
+    if BACKGROUND_QUEUE:
+        try:
+            await BACKGROUND_QUEUE.stop()
+        except Exception:
+            logger.warning("Failed to stop background queue", exc_info=True)
+        BACKGROUND_QUEUE = None
 
 def _count_lines(path):
     global _chunk_count_cache, _chunk_count_stamp
@@ -603,9 +951,10 @@ async def google_callback(request: Request):
             try:
                 import httpx
                 async with httpx.AsyncClient() as client:
+                    headers = build_observability_headers({"Authorization": f"Bearer {access_token}"})
                     resp = await client.get(
                         "https://www.googleapis.com/oauth2/v2/userinfo",
-                        headers={"Authorization": f"Bearer {access_token}"},
+                        headers=headers,
                         timeout=10.0
                     )
                     resp.raise_for_status()
@@ -717,10 +1066,13 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    await _consume_workspace_quota(workspace_id, request_delta=1)
+
     # Add timeout for query processing
     import asyncio
     start_time = asyncio.get_event_loop().time()
     outcome = "success"
+    status_code = 200
     try:
         with RequestTimer(
             "ask",
@@ -742,19 +1094,22 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
         return result
     except asyncio.TimeoutError:
         outcome = "timeout"
+        status_code = 504
         raise HTTPException(
             status_code=504,
             detail="Request timed out. Please try a simpler query or contact support."
         )
-    except HTTPException:
+    except HTTPException as exc:
         outcome = "error"
+        status_code = exc.status_code
         raise
     except Exception:
         outcome = "error"
+        status_code = 500
         raise
     finally:
         duration = asyncio.get_event_loop().time() - start_time
-        ASK_REQUEST_COUNTER.labels(outcome=outcome).inc()
+        ASK_REQUEST_COUNTER.labels(outcome=outcome, status_code=str(status_code)).inc()
         ASK_LATENCY.labels(outcome=outcome).observe(duration)
 
 def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
@@ -804,6 +1159,19 @@ def stats():
     return {"count": _count_lines(CHUNKS_PATH)}
 api_v1.get("/stats")(stats)
 
+
+@api_v1.get("/jobs")
+async def list_jobs(request: Request, limit: int = 50):
+    if not BACKGROUND_JOBS_ENABLED or not BACKGROUND_QUEUE:
+        raise HTTPException(status_code=503, detail="Background jobs are disabled.")
+    await _resolve_auth_context(request, scopes=("write",), require=True)
+    try:
+        limit = max(1, min(200, int(limit)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid limit parameter")
+    return {"jobs": BACKGROUND_QUEUE.list_jobs(limit=limit)}
+
+
 def validate_youtube_url(url: str) -> bool:
     """Validate YouTube URL format."""
     youtube_patterns = [
@@ -823,6 +1191,7 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
         require=True,
     )
     user_id = user.get("user_id") if user else None
+    await _require_billing_active(workspace_id)
 
     # Validate input
     try:
@@ -833,6 +1202,8 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
     urls_list = [u.strip() for u in url_req.urls.splitlines() if u.strip()]
     results = []
     total = 0
+    await _consume_workspace_quota(workspace_id, request_delta=1)
+    current_chunk_total = await _count_workspace_chunks(workspace_id)
     
     for url in urls_list:
         # Validate YouTube URL format
@@ -846,7 +1217,7 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
             )
-            INGEST_COUNTER.labels(source="youtube", outcome="skipped").inc()
+            _record_ingest_event("youtube", "skipped", 400)
             continue
         start_time = time.perf_counter()
         primary_outcome = "success"
@@ -876,7 +1247,7 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                     error=error_msg,
                     stage="primary",
                 )
-                INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
+                _record_ingest_event("youtube", "failure", 500)
                 primary_outcome = "failure"
             else:
                 results.append({"url": url, "written": written, "mode": "transcript"})
@@ -890,7 +1261,9 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                     language=url_req.language,
                     mode="transcript",
                 )
-                INGEST_COUNTER.labels(source="youtube", outcome="success").inc()
+                _record_ingest_event("youtube", "success", 200)
+                if written:
+                    INGEST_PROCESSED_CHUNKS.labels(source="youtube").inc(written)
             total += written
         except Exception as e:
             logger.error(f"Error ingesting YouTube URL {url}: {e}", exc_info=True)
@@ -903,7 +1276,7 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 error=str(e),
                 stage="primary_exception",
             )
-            INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
+            _record_ingest_event("youtube", "failure", 500)
             # fallback: fetch auto-captions via yt-dlp, then ingest .vtt
             vid = ""
             primary_outcome = "failure"
@@ -976,7 +1349,9 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                     language=url_req.language,
                     mode="auto_captions",
                 )
-                INGEST_COUNTER.labels(source="youtube", outcome="success").inc()
+                _record_ingest_event("youtube", "success", 200)
+                if r.get("written", 0):
+                    INGEST_PROCESSED_CHUNKS.labels(source="youtube").inc(r.get("written", 0))
                 total += r.get("written",0)
             else:
                 error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
@@ -990,12 +1365,18 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                     error=error_msg,
                     stage="fallback_unavailable",
                 )
-                INGEST_COUNTER.labels(source="youtube", outcome="failure").inc()
+                _record_ingest_event("youtube", "failure", 404)
         finally:
             INGEST_LATENCY.labels(
                 source="youtube",
                 outcome=primary_outcome,
             ).observe(max(time.perf_counter() - start_time, 0.0))
+    if total > 0:
+        await _consume_workspace_quota(
+            workspace_id,
+            chunk_delta=total,
+            current_chunk_total=current_chunk_total,
+        )
     global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
     _chunk_count_stamp = None
@@ -1013,10 +1394,13 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         require=True,
     )
     user_id = user.get("user_id") if user else None
+    await _require_billing_active(workspace_id)
 
     UPLOAD_DIR.mkdir(exist_ok=True)
     results = []
     total = 0
+    await _consume_workspace_quota(workspace_id, request_delta=1)
+    current_chunk_total = await _count_workspace_chunks(workspace_id)
     
     for f in files:
         # Validate file type
@@ -1033,7 +1417,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
             )
-            INGEST_COUNTER.labels(source="file", outcome="skipped").inc()
+            _record_ingest_event("file", "skipped", 400)
             continue
         
         # Generate safe filename
@@ -1064,7 +1448,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                         workspace_id=workspace_id,
                         api_key=bool(api_key_principal),
                     )
-                    INGEST_COUNTER.labels(source="file", outcome="failure").inc()
+                    _record_ingest_event("file", "failure", 400)
                     break
                 content += chunk
         except Exception as e:
@@ -1079,7 +1463,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
             )
-            INGEST_COUNTER.labels(source="file", outcome="failure").inc()
+            _record_ingest_event("file", "failure", 500)
             continue
         
         if size > MAX_FILE_SIZE:
@@ -1101,7 +1485,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
             )
-            INGEST_COUNTER.labels(source="file", outcome="failure").inc()
+            _record_ingest_event("file", "failure", 500)
             continue
         
         # Process file
@@ -1147,8 +1531,9 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
                 outcome=processing_outcome,
             ).observe(max(time.perf_counter() - processing_start, 0.0))
         
+        written_count = int(r.get("written", 0) or 0)
         results.append({"file": f.filename, "safe_name": safe_name, **r})
-        total += int(r.get("written", 0) or 0)
+        total += written_count
         status = "failed" if r.get("error") else "completed"
         _log_event(
             f"ingest.file.{status}",
@@ -1162,30 +1547,201 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
             api_key=bool(api_key_principal),
             error=r.get("error"),
         )
-        INGEST_COUNTER.labels(
-            source="file",
-            outcome="failure" if r.get("error") else "success",
-        ).inc()
+        if r.get("error"):
+            _record_ingest_event("file", "failure", 500)
+        else:
+            _record_ingest_event("file", "success", 200)
+            if written_count:
+                INGEST_PROCESSED_CHUNKS.labels(source="file").inc(written_count)
     
+    if total > 0:
+        await _consume_workspace_quota(
+            workspace_id,
+            chunk_delta=total,
+            current_chunk_total=current_chunk_total,
+        )
     global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
     _chunk_count_stamp = None
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 api_v1.post("/ingest/files")(ingest_files)
+api_v1.post("/ask")(ask)
 
-@app.post("/api/dedupe")
-@app.post("/dedupe")
-async def dedupe(request: Request):
-    user, _, api_key_principal = await _resolve_auth_context(
+
+@app.post("/api/billing/checkout")
+async def create_billing_checkout(request: Request, payload: BillingCheckoutRequest):
+    if not BILLING_SERVICE:
+        raise HTTPException(status_code=503, detail="Billing integration is not configured.")
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("write",),
         require=True,
     )
-    # API key already validated; JWT path ensures user exists.
-    if not user and not api_key_principal:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+    require_admin(user, api_key_principal)
+    organization_id = await _get_organization_id_for_workspace(workspace_id)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Workspace organization not found.")
 
+    try:
+        session = await BILLING_SERVICE.create_checkout_session(
+            organization_id,
+            price_id=payload.price_id,
+            success_url=payload.success_url,
+            cancel_url=payload.cancel_url,
+        )
+    except BillingServiceError as exc:
+        _record_external_error("stripe", "checkout_session")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"id": session.get("id"), "url": session.get("url")}
+
+
+@app.post("/api/billing/portal")
+async def create_billing_portal(request: Request, payload: BillingPortalRequest):
+    if not BILLING_SERVICE:
+        raise HTTPException(status_code=503, detail="Billing integration is not configured.")
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
+    organization_id = await _get_organization_id_for_workspace(workspace_id)
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Workspace organization not found.")
+
+    try:
+        session = await BILLING_SERVICE.create_billing_portal_session(
+            organization_id,
+            return_url=payload.return_url,
+        )
+    except BillingServiceError as exc:
+        _record_external_error("stripe", "billing_portal")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"id": session.get("id"), "url": session.get("url")}
+
+
+@app.post("/api/billing/webhook")
+async def stripe_webhook(request: Request):
+    if not BILLING_SERVICE:
+        raise HTTPException(status_code=503, detail="Billing integration is not configured.")
+    payload = await request.body()
+    signature = request.headers.get("Stripe-Signature")
+    try:
+        event = BILLING_SERVICE.construct_event(payload, signature)
+        await BILLING_SERVICE.handle_event(event)
+    except BillingServiceError as exc:
+        _record_external_error("stripe", "webhook")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"received": True}
+
+
+api_v1.post("/billing/checkout")(create_billing_checkout)
+api_v1.post("/billing/portal")(create_billing_portal)
+api_v1.post("/billing/webhook")(stripe_webhook)
+
+
+def _require_admin_context(user: Optional[Dict[str, Any]], api_key: Optional[APIKeyPrincipal]) -> None:
+    require_admin(user, api_key)
+
+
+@api_v1.get("/admin/workspaces")
+async def list_workspaces(request: Request):
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("admin",), require=True)
+    _require_admin_context(user, api_key_principal)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    rows = await DB.fetch_all(
+        """
+        SELECT
+            w.id,
+            w.name,
+            w.slug,
+            w.organization_id,
+            o.name AS organization_name,
+            o.billing_status,
+            o.plan,
+            w.created_at,
+            w.updated_at
+        FROM workspaces w
+        JOIN organizations o ON o.id = w.organization_id
+        ORDER BY o.name, w.name
+        """
+    )
+    return {"workspaces": rows}
+
+
+@api_v1.get("/admin/billing")
+async def list_billing_status(request: Request):
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("admin",), require=True)
+    _require_admin_context(user, api_key_principal)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    rows = await DB.fetch_all(
+        """
+        SELECT
+            id,
+            name,
+            billing_status,
+            stripe_customer_id,
+            stripe_subscription_id,
+            plan,
+            trial_ends_at,
+            subscription_expires_at,
+            billing_updated_at
+        FROM organizations
+        ORDER BY name
+        """
+    )
+    return {"organizations": rows}
+
+
+class BillingUpdate(BaseModel):
+    plan: Optional[str] = None
+    billing_status: Optional[str] = None
+    trial_ends_at: Optional[datetime] = None
+    subscription_expires_at: Optional[datetime] = None
+
+
+@api_v1.patch("/admin/billing/{organization_id}")
+async def update_billing_status(organization_id: str, payload: BillingUpdate, request: Request):
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("admin",), require=True)
+    _require_admin_context(user, api_key_principal)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    fields = []
+    values = []
+    if payload.plan:
+        fields.append("plan = $%d" % (len(values) + 1))
+        values.append(payload.plan)
+    if payload.billing_status:
+        fields.append("billing_status = $%d" % (len(values) + 1))
+        values.append(payload.billing_status)
+    if payload.trial_ends_at is not None:
+        fields.append("trial_ends_at = $%d" % (len(values) + 1))
+        values.append(payload.trial_ends_at)
+    if payload.subscription_expires_at is not None:
+        fields.append("subscription_expires_at = $%d" % (len(values) + 1))
+        values.append(payload.subscription_expires_at)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No billing fields provided.")
+
+    values.append(organization_id)
+    query = f"""
+    UPDATE organizations
+    SET {', '.join(fields)}, billing_updated_at = NOW()
+    WHERE id = ${len(values)}
+    RETURNING *
+    """
+    row = await DB.fetch_one(query, tuple(values))
+    if not row:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    return {"organization": row}
+
+
+def _dedupe_chunks_sync() -> Dict[str, Any]:
     inp = CHUNKS_PATH
     tmp = CHUNKS_PATH + ".tmp"
     seen = set()
@@ -1225,7 +1781,45 @@ async def dedupe(request: Request):
             pass
         raise HTTPException(status_code=500, detail=f"Failed to dedupe chunks: {err}") from err
 
-    return {"kept": kept, "total_before": total, "count": _count_lines(CHUNKS_PATH)}
+    global _chunk_count_cache, _chunk_count_stamp
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
+
+    result = {"kept": kept, "total_before": total, "count": _count_lines(CHUNKS_PATH)}
+    _log_event("chunks.dedupe.completed", kept=kept, total_before=total)
+    return result
+
+
+async def _run_dedupe_job() -> Dict[str, Any]:
+    return await asyncio.to_thread(_dedupe_chunks_sync)
+
+
+@app.post("/api/dedupe")
+@app.post("/dedupe")
+async def dedupe(request: Request):
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    if not user and not api_key_principal:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    if BACKGROUND_JOBS_ENABLED and BACKGROUND_QUEUE:
+        job = BACKGROUND_QUEUE.submit(
+            "dedupe",
+            _run_dedupe_job,
+            metadata={
+                "workspace_id": workspace_id,
+                "trigger": "api",
+            },
+        )
+        _log_event("chunks.dedupe.queued", job_id=job.id, workspace_id=workspace_id)
+        return {"job_id": job.id, "queued": True, "status": "queued"}
+
+    result = await _run_dedupe_job()
+    return result
+
 api_v1.post("/dedupe")(dedupe)
 
 @app.get("/api/sources")
@@ -1337,13 +1931,30 @@ api_v1.get("/search")(search_source)
 @app.post("/rebuild")
 async def rebuild_index(request: Request):
     """Rebuild the search index."""
-    await _resolve_auth_context(request, scopes=("write",), require=True)
+    _, workspace_id, _ = await _resolve_auth_context(request, scopes=("write",), require=True)
 
-    global INDEX, CHUNKS
-    INDEX = None
-    CHUNKS = []
-    ensure_index()
-    return {"status": "rebuilt", "count": len(CHUNKS)}
+    async def _run_rebuild() -> Dict[str, Any]:
+        def _rebuild_sync() -> Dict[str, Any]:
+            global INDEX, CHUNKS
+            INDEX = None
+            CHUNKS = []
+            ensure_index()
+            result = {"status": "rebuilt", "count": len(CHUNKS)}
+            _log_event("index.rebuild.completed", count=result["count"], workspace_id=workspace_id)
+            return result
+
+        return await asyncio.to_thread(_rebuild_sync)
+
+    if BACKGROUND_JOBS_ENABLED and BACKGROUND_QUEUE:
+        job = BACKGROUND_QUEUE.submit(
+            "rebuild_index",
+            _run_rebuild,
+            metadata={"workspace_id": workspace_id},
+        )
+        _log_event("index.rebuild.queued", job_id=job.id, workspace_id=workspace_id)
+        return {"job_id": job.id, "queued": True, "status": "queued"}
+
+    return await _run_rebuild()
 api_v1.post("/rebuild")(rebuild_index)
 
 # Admin-only endpoints
