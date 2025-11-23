@@ -915,4 +915,10 @@ All changes followed these principles:
 - [x] **O2:** Author Grafana dashboard + alert rule templates (YAML/JSON) capturing latency, errors, quota breaches, and job failures.
 - [x] **O3:** Update docs (`docs/guides/Phase8_Plan.md` + `docs/infra/`) with deployment steps, alert thresholds, and runbook guidance.
 - [x] **O4:** Add regression tests or scripts validating metric registration and include any necessary exporter wiring.
-- [ ] **O5:** Summarize outcomes in Review section (metrics artifacts, docs, validation) once complete.
+- [x] **O5:** Summarize outcomes in Review section (metrics artifacts, docs, validation) once complete.
+
+### Review – Observability Dashboards (Nov 23, 2025)
+- Cataloged all Prometheus metrics and mapped them to dashboards/alerts (`docs/guides/Phase8_Plan.md`).
+- Authored ready-to-import Grafana dashboard + Prometheus alert rules under `docs/infra/metrics_alerts/` with deployment README.
+- Updated quick reference + Phase 8 plan to reference monitoring assets and runbook steps.
+- Added regression coverage so `/metrics` exposes ask, ingest, quota, external, and background job metrics after queue integration.
