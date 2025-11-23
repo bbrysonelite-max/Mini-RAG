@@ -511,12 +511,32 @@ $("ingestUrls").onclick=async()=>{
     }
     progressBar.style.width = "100%";
     log.textContent=JSON.stringify(d,null,2);
-    
+
+    if(d.queued){
+      const partial = d.partial_results || [];
+      if(partial.length){
+        const errors = partial.filter(item => item.error).map(item => `${item.url || ''}: ${item.error}`).filter(Boolean);
+        if(errors.length){
+          showStatus(`⏳ Job queued (${d.job_id}). ${errors.length} URL(s) need attention before processing finishes.`, "error");
+        } else {
+          showStatus(`⏳ Job queued (${d.job_id}). Processing in background.`, "success");
+        }
+      } else {
+        showStatus(`⏳ Job queued (${d.job_id}). Processing in background.`, "success");
+      }
+      progressText.textContent = "Queued for background processing";
+      setTimeout(() => {
+        uploadProgress.style.display = "none";
+        progressBar.style.width = "0%";
+      }, 3000);
+      return;
+    }
+
     let successCount = 0;
     let errorCount = 0;
     let totalChunks = 0;
     const errors = [];
-    
+
     (d.results || []).forEach(result => {
       if(result.error){
         errorCount++;
@@ -537,7 +557,7 @@ $("ingestUrls").onclick=async()=>{
         timestamp: new Date().toISOString()
       });
     });
-    
+
     if(successCount > 0 && errorCount === 0){
       showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} URL(s)`, "success");
       progressText.textContent = `Success! ${totalChunks} chunks ingested`;
@@ -549,7 +569,7 @@ $("ingestUrls").onclick=async()=>{
       showStatus(`❌ Failed: ${errorMsg}`, "error");
       progressText.textContent = "Failed - see details below";
     }
-    
+
     if(countEl) countEl.textContent = d.count || 0;
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
@@ -679,12 +699,32 @@ $("upload").onclick=async()=>{
     progressText.textContent = "Processing...";
     log.textContent=JSON.stringify(d,null,2);
     progressBar.style.width = "100%";
-    
+
+    if(d.queued){
+      const partial = d.partial_results || [];
+      if(partial.length){
+        const partialErrors = partial.filter(item => item.error);
+        if(partialErrors.length){
+          showStatus(`⏳ Job queued (${d.job_id}). ${partialErrors.length} file(s) reported issues before queueing.`, "error");
+        } else {
+          showStatus(`⏳ Job queued (${d.job_id}). Files will process in the background.`, "success");
+        }
+      } else {
+        showStatus(`⏳ Job queued (${d.job_id}). Files will process in the background.`, "success");
+      }
+      progressText.textContent = "Queued for background processing";
+      setTimeout(() => {
+        uploadProgress.style.display = "none";
+        progressBar.style.width = "0%";
+      }, 3000);
+      return;
+    }
+
     let successCount = 0;
     let errorCount = 0;
     let totalChunks = 0;
     const errors = [];
-    
+
     Array.from(fs).forEach((file, idx) => {
       const result = d.results?.[idx] || {};
       if(result.error){
@@ -706,7 +746,7 @@ $("upload").onclick=async()=>{
         timestamp: new Date().toISOString()
       });
     });
-    
+
     if(successCount > 0 && errorCount === 0){
       showStatus(`✅ Success! Ingested ${totalChunks} chunks from ${successCount} file(s)`, "success");
       progressText.textContent = `Success! ${totalChunks} chunks ingested`;
@@ -718,12 +758,12 @@ $("upload").onclick=async()=>{
       showStatus(`❌ Failed: ${errorMsg}`, "error");
       progressText.textContent = "Failed - see details below";
     }
-    
+
     if(countEl) countEl.textContent = d.count || 0;
     localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
     updateHistory();
     await refreshStatsCard();
-    
+
     if(failedFiles.length && retryFilesBtn){
       const dt = new DataTransfer();
       failedFiles.forEach(file=>dt.items.add(file));

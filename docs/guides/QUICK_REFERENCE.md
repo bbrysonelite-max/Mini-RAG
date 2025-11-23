@@ -35,6 +35,7 @@
 - [x] Secret management guardrails (`SECRET_KEY`/Stripe placeholders block startup unless `ALLOW_INSECURE_DEFAULTS=true` for local dev)
 - [x] Security headers (HSTS, X-Content-Type-Options, Content-Security-Policy `default-src 'self'`, cache-control)
 - [x] Audit log export (`/api/v1/admin/audit` returns recent JSON events)
+- [x] Background jobs (`BACKGROUND_JOBS_ENABLED=true` queues dedupe/rebuild/ingest work; `/api/v1/jobs` exposes status + results)
 
 ### Robustness
 - [x] Comprehensive error handling (domain-specific + fallback handlers)

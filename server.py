@@ -1259,11 +1259,47 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
         raise HTTPException(status_code=400, detail=str(e))
     
     urls_list = [u.strip() for u in url_req.urls.splitlines() if u.strip()]
-    results = []
+
+    if BACKGROUND_JOBS_ENABLED and BACKGROUND_QUEUE and urls_list:
+        async def job_runner():
+            return await _ingest_urls_core(user, workspace_id, api_key_principal, url_req, urls_list)
+
+        job = BACKGROUND_QUEUE.submit(
+            "ingest_urls",
+            job_runner,
+            metadata={
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "language": url_req.language,
+                "url_count": len(urls_list),
+            },
+        )
+        _log_event(
+            "ingest.urls.queued",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            job_id=job.id,
+            language=url_req.language,
+            url_count=len(urls_list),
+        )
+        return {"job_id": job.id, "queued": True, "status": "queued"}
+
+    return await _ingest_urls_core(user, workspace_id, api_key_principal, url_req, urls_list)
+
+
+async def _ingest_urls_core(
+    user: Optional[Dict[str, Any]],
+    workspace_id: Optional[str],
+    api_key_principal: Optional[APIKeyPrincipal],
+    url_req: IngestURLRequest,
+    urls_list: List[str],
+) -> Dict[str, Any]:
+    user_id = user.get("user_id") if user else None
+    results: List[Dict[str, Any]] = []
     total = 0
     await _consume_workspace_quota(workspace_id, request_delta=1)
     current_chunk_total = await _count_workspace_chunks(workspace_id)
-    
+
     for url in urls_list:
         # Validate YouTube URL format
         if not validate_youtube_url(url):
@@ -1324,15 +1360,15 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 if written:
                     INGEST_PROCESSED_CHUNKS.labels(source="youtube").inc(written)
             total += written
-        except Exception as e:
-            logger.error(f"Error ingesting YouTube URL {url}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"Error ingesting YouTube URL {url}: {exc}", exc_info=True)
             _log_event(
                 "ingest.youtube.failed",
                 url=url,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
-                error=str(e),
+                error=str(exc),
                 stage="primary_exception",
             )
             _record_ingest_event("youtube", "failure", 500)
@@ -1349,8 +1385,8 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
             except subprocess.TimeoutExpired:
                 logger.warning(f"yt-dlp timeout for {url}")
                 vid = ""
-            except Exception as e:
-                logger.warning(f"yt-dlp failed for {url}: {e}")
+            except Exception as yt_err:
+                logger.warning(f"yt-dlp failed for {url}: {yt_err}")
                 vid = ""
             vtt = ""
             try:
@@ -1365,14 +1401,15 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 if vid:
                     candidates += [f"{vid}.{url_req.language}.vtt", f"{vid}.en.vtt", f"{vid}.en-US.vtt"]
                 candidates += [p for p in os.listdir(".") if p.endswith(".vtt")]
-                for c in candidates:
-                    if os.path.exists(c):
-                        vtt = c; break
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        vtt = candidate
+                        break
             except subprocess.TimeoutExpired:
                 logger.warning(f"yt-dlp download timeout for {url}")
                 vtt = ""
-            except Exception as e:
-                logger.warning(f"yt-dlp download failed for {url}: {e}")
+            except Exception as yt_dl_exc:
+                logger.warning(f"yt-dlp download failed for {url}: {yt_dl_exc}")
                 vtt = ""
             if vtt:
                 fallback_start = time.perf_counter()
@@ -1397,7 +1434,7 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                         source="youtube",
                         outcome=fallback_outcome,
                     ).observe(max(time.perf_counter() - fallback_start, 0.0))
-                results.append({"url": url, "written": r.get("written",0), "mode": "auto_captions", "file": vtt})
+                results.append({"url": url, "written": r.get("written", 0), "mode": "auto_captions", "file": vtt})
                 _log_event(
                     "ingest.youtube.completed",
                     url=url,
@@ -1411,9 +1448,9 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
                 _record_ingest_event("youtube", "success", 200)
                 if r.get("written", 0):
                     INGEST_PROCESSED_CHUNKS.labels(source="youtube").inc(r.get("written", 0))
-                total += r.get("written",0)
+                total += r.get("written", 0)
             else:
-                error_msg = f"No transcript or auto-captions found. Video may not have subtitles available."
+                error_msg = "No transcript or auto-captions found. Video may not have subtitles available."
                 results.append({"url": url, "error": error_msg, "written": 0})
                 _log_event(
                     "ingest.youtube.failed",
@@ -1441,7 +1478,6 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
     _chunk_count_stamp = None
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
-api_v1.post("/ingest/urls")(ingest_urls)
 
 @app.post("/api/ingest_files")
 @app.post("/ingest/files")
@@ -1455,178 +1491,54 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
     user_id = user.get("user_id") if user else None
     await _require_billing_active(workspace_id)
 
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    results = []
-    total = 0
-    await _consume_workspace_quota(workspace_id, request_delta=1)
-    current_chunk_total = await _count_workspace_chunks(workspace_id)
-    
-    for f in files:
-        # Validate file type
-        if not validate_file_type(f.filename):
-            results.append({
-                "file": f.filename,
-                "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
-            })
-            _log_event(
-                "ingest.file.skipped",
-                file=f.filename,
-                reason="unsupported_type",
-                user_id=user_id,
-                workspace_id=workspace_id,
-                api_key=bool(api_key_principal),
+    prepared_files, initial_results = await _prepare_file_payloads(files, user, workspace_id, api_key_principal)
+
+    if not prepared_files and initial_results:
+        # No files to process after validation
+        return {"results": initial_results, "total_written": 0, "count": _count_lines(CHUNKS_PATH)}
+
+    if BACKGROUND_JOBS_ENABLED and BACKGROUND_QUEUE and prepared_files:
+        async def job_runner():
+            return await _ingest_files_core(
+                user,
+                workspace_id,
+                api_key_principal,
+                prepared_files,
+                language,
+                initial_results,
             )
-            _record_ingest_event("file", "skipped", 400)
-            continue
-        
-        # Generate safe filename
-        safe_name = generate_safe_filename(f.filename)
-        path = UPLOAD_DIR / safe_name
-        
-        # Read file with size limit
-        content = b""
-        size = 0
-        try:
-            while True:
-                chunk = await f.read(8192)  # 8KB chunks
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_FILE_SIZE:
-                    results.append({
-                        "file": f.filename,
-                        "error": f"File exceeds maximum size of {MAX_FILE_SIZE // (1024*1024)}MB"
-                    })
-                    _log_event(
-                        "ingest.file.failed",
-                        file=f.filename,
-                        safe_name=safe_name,
-                        reason="size_limit",
-                        size=size,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                        api_key=bool(api_key_principal),
-                    )
-                    _record_ingest_event("file", "failure", 400)
-                    break
-                content += chunk
-        except Exception as e:
-            results.append({"file": f.filename, "error": f"Failed to read file: {str(e)}"})
-            _log_event(
-                "ingest.file.failed",
-                file=f.filename,
-                safe_name=safe_name,
-                reason="read_error",
-                error=str(e),
-                user_id=user_id,
-                workspace_id=workspace_id,
-                api_key=bool(api_key_principal),
-            )
-            _record_ingest_event("file", "failure", 500)
-            continue
-        
-        if size > MAX_FILE_SIZE:
-            continue
-        
-        # Write file
-        try:
-            with open(path, "wb") as out:
-                out.write(content)
-        except Exception as e:
-            results.append({"file": f.filename, "error": f"Failed to save file: {str(e)}"})
-            _log_event(
-                "ingest.file.failed",
-                file=f.filename,
-                safe_name=safe_name,
-                reason="save_error",
-                error=str(e),
-                user_id=user_id,
-                workspace_id=workspace_id,
-                api_key=bool(api_key_principal),
-            )
-            _record_ingest_event("file", "failure", 500)
-            continue
-        
-        # Process file
-        lower = safe_name.lower()
-        handler = "unknown"
-        processing_start = time.perf_counter()
-        processing_outcome = "success"
-        r: Dict[str, Any] = {}
-        try:
-            with RequestTimer(
-                "ingest_file",
-                {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
-            ):
-                if lower.endswith((".vtt", ".srt", ".txt")):
-                    handler = "transcript"
-                    r = ingest_transcript(
-                        str(path),
-                        out_jsonl=CHUNKS_PATH,
-                        language=language,
-                        user_id=user_id,
-                        workspace_id=workspace_id
-                    )
-                elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
-                    handler = "docs"
-                    r = ingest_docs(
-                        str(path),
-                        out_jsonl=CHUNKS_PATH,
-                        language=language,
-                        user_id=user_id,
-                        workspace_id=workspace_id
-                    )
-                else:
-                    r = {"error": "unsupported file type"}
-        except Exception as e:
-            r = {"error": str(e)}
-            processing_outcome = "failure"
-        else:
-            if r.get("error"):
-                processing_outcome = "failure"
-        finally:
-            INGEST_LATENCY.labels(
-                source="file",
-                outcome=processing_outcome,
-            ).observe(max(time.perf_counter() - processing_start, 0.0))
-        
-        written_count = int(r.get("written", 0) or 0)
-        results.append({"file": f.filename, "safe_name": safe_name, **r})
-        total += written_count
-        status = "failed" if r.get("error") else "completed"
+
+        job = BACKGROUND_QUEUE.submit(
+            "ingest_files",
+            job_runner,
+            metadata={
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "language": language,
+                "file_count": len(prepared_files),
+            },
+        )
         _log_event(
-            f"ingest.file.{status}",
-            file=f.filename,
-            safe_name=safe_name,
-            handler=handler,
-            written=int(r.get("written", 0) or 0),
-            language=language,
-            user_id=user_id,
+            "ingest.files.queued",
             workspace_id=workspace_id,
-            api_key=bool(api_key_principal),
-            error=r.get("error"),
+            user_id=user_id,
+            job_id=job.id,
+            language=language,
+            file_count=len(prepared_files),
         )
-        if r.get("error"):
-            _record_ingest_event("file", "failure", 500)
-        else:
-            _record_ingest_event("file", "success", 200)
-            if written_count:
-                INGEST_PROCESSED_CHUNKS.labels(source="file").inc(written_count)
-    
-    if total > 0:
-        await _consume_workspace_quota(
-            workspace_id,
-            chunk_delta=total,
-            current_chunk_total=current_chunk_total,
-        )
-    global _chunk_count_cache, _chunk_count_stamp
-    _chunk_count_cache = None
-    _chunk_count_stamp = None
+        response: Dict[str, Any] = {"job_id": job.id, "queued": True, "status": "queued"}
+        if initial_results:
+            response["partial_results"] = initial_results
+        return response
 
-    return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
-api_v1.post("/ingest/files")(ingest_files)
-api_v1.post("/ask")(ask)
-
+    return await _ingest_files_core(
+        user,
+        workspace_id,
+        api_key_principal,
+        prepared_files,
+        language,
+        initial_results,
+    )
 
 @app.post("/api/billing/checkout")
 async def create_billing_checkout(request: Request, payload: BillingCheckoutRequest):
@@ -2133,3 +2045,214 @@ def _read_audit_events(limit: int) -> List[Dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return events
+
+async def _prepare_file_payloads(
+    files: List[UploadFile],
+    user: Optional[Dict[str, Any]],
+    workspace_id: Optional[str],
+    api_key_principal: Optional[APIKeyPrincipal],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    prepared: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+    user_id = user.get("user_id") if user else None
+
+    for upload in files:
+        if upload is None or not upload.filename:
+            continue
+
+        if not validate_file_type(upload.filename):
+            results.append(
+                {
+                    "file": upload.filename,
+                    "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+                }
+            )
+            _log_event(
+                "ingest.file.skipped",
+                file=upload.filename,
+                reason="unsupported_type",
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            _record_ingest_event("file", "skipped", 400)
+            continue
+
+        safe_name = generate_safe_filename(upload.filename)
+        size = 0
+        content = bytearray()
+        try:
+            while True:
+                chunk = await upload.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    results.append(
+                        {
+                            "file": upload.filename,
+                            "error": f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)}MB",
+                        }
+                    )
+                    _log_event(
+                        "ingest.file.failed",
+                        file=upload.filename,
+                        safe_name=safe_name,
+                        reason="size_limit",
+                        size=size,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        api_key=bool(api_key_principal),
+                    )
+                    _record_ingest_event("file", "failure", 400)
+                    break
+                content.extend(chunk)
+        except Exception as exc:
+            results.append({"file": upload.filename, "error": f"Failed to read file: {exc}"})
+            _log_event(
+                "ingest.file.failed",
+                file=upload.filename,
+                safe_name=safe_name,
+                reason="read_error",
+                error=str(exc),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            _record_ingest_event("file", "failure", 500)
+            continue
+        finally:
+            try:
+                await upload.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
+
+        if size > MAX_FILE_SIZE:
+            continue
+
+        prepared.append(
+            {
+                "file": upload.filename,
+                "safe_name": safe_name,
+                "content": bytes(content),
+            }
+        )
+
+    return prepared, results
+
+
+async def _ingest_files_core(
+    user: Optional[Dict[str, Any]],
+    workspace_id: Optional[str],
+    api_key_principal: Optional[APIKeyPrincipal],
+    prepared_files: List[Dict[str, Any]],
+    language: str,
+    initial_results: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    results: List[Dict[str, Any]] = list(initial_results or [])
+    total = 0
+    user_id = user.get("user_id") if user else None
+
+    await _consume_workspace_quota(workspace_id, request_delta=1)
+    current_chunk_total = await _count_workspace_chunks(workspace_id)
+
+    UPLOAD_DIR.mkdir(exist_ok=True)
+
+    for payload in prepared_files:
+        safe_name = payload["safe_name"]
+        original = payload["file"]
+        path = UPLOAD_DIR / safe_name
+
+        try:
+            with open(path, "wb") as out_file:
+                out_file.write(payload["content"])
+        except Exception as exc:
+            results.append({"file": original, "error": f"Failed to save file: {exc}"})
+            _log_event(
+                "ingest.file.failed",
+                file=original,
+                safe_name=safe_name,
+                reason="save_error",
+                error=str(exc),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                api_key=bool(api_key_principal),
+            )
+            _record_ingest_event("file", "failure", 500)
+            continue
+
+        lower = safe_name.lower()
+        handler = "unknown"
+        processing_start = time.perf_counter()
+        processing_outcome = "success"
+        record: Dict[str, Any] = {}
+        try:
+            with RequestTimer(
+                "ingest_file",
+                {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
+            ):
+                if lower.endswith((".vtt", ".srt", ".txt")):
+                    handler = "transcript"
+                    record = ingest_transcript(
+                        str(path),
+                        out_jsonl=CHUNKS_PATH,
+                        language=language,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    )
+                elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
+                    handler = "docs"
+                    record = ingest_docs(
+                        str(path),
+                        out_jsonl=CHUNKS_PATH,
+                        language=language,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    )
+                else:
+                    record = {"error": "unsupported file type"}
+        except Exception as exc:
+            record = {"error": str(exc)}
+            processing_outcome = "failure"
+        else:
+            if record.get("error"):
+                processing_outcome = "failure"
+        finally:
+            INGEST_LATENCY.labels(source="file", outcome=processing_outcome).observe(
+                max(time.perf_counter() - processing_start, 0.0)
+            )
+
+        written_count = int(record.get("written", 0) or 0)
+        results.append({"file": original, "safe_name": safe_name, **record})
+        total += written_count
+        status = "failed" if record.get("error") else "completed"
+        _log_event(
+            f"ingest.file.{status}",
+            file=original,
+            safe_name=safe_name,
+            handler=handler,
+            written=written_count,
+            language=language,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            api_key=bool(api_key_principal),
+            error=record.get("error"),
+        )
+        if record.get("error"):
+            _record_ingest_event("file", "failure", 500)
+        else:
+            _record_ingest_event("file", "success", 200)
+            if written_count:
+                INGEST_PROCESSED_CHUNKS.labels(source="file").inc(written_count)
+
+    if total > 0:
+        await _consume_workspace_quota(
+            workspace_id,
+            chunk_delta=total,
+            current_chunk_total=current_chunk_total,
+        )
+    global _chunk_count_cache, _chunk_count_stamp
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
+
+    return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}

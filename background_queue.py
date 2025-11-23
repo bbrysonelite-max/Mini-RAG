@@ -49,6 +49,7 @@ class BackgroundJob:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "metadata": self.metadata,
+            "result": self.result,
             "error": self.error,
         }
 
@@ -115,7 +116,8 @@ class BackgroundTaskQueue:
             job.started_at = time.time()
             start = time.perf_counter()
             try:
-                await job_factory()
+                result = await job_factory()
+                job.result = result
             except Exception as exc:  # pragma: no cover - error path tested separately
                 job.status = "failed"
                 job.error = str(exc)

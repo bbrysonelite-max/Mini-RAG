@@ -31,7 +31,7 @@
 - Security headers tightened: default CSP now locks `default-src 'self'`, forbids `object-src`, denies framing, and responses emit cache-control/no-store alongside existing HSTS/XSS protections.
 - Audit logging: `_log_event` writes to `logs/audit.log`, `/api/v1/admin/audit` exposes recent entries for admins, and tests validate access + JSON output.
 - CI hardening: pip-audit runs in GitHub workflow with placeholders gated by `ALLOW_INSECURE_DEFAULTS=true` to catch vulnerable dependencies before merge.
-- _Pending approval & execution._
+- Background queue: ingestion URLs/files enqueue when `BACKGROUND_JOBS_ENABLED`; `_ingest_*_core` helpers reuse logic, job results surface through `/api/v1/jobs`, and tests cover queued endpoints and UI handles queued states.
 
 ---
 # Phase 5 API Key Infrastructure (Nov 19, 2025)

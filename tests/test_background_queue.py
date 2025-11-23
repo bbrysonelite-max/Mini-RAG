@@ -13,6 +13,7 @@ async def test_background_queue_executes_job_successfully():
 
     async def job():
         called.set()
+        return True
 
     record = queue.submit("demo", job)
     await asyncio.wait_for(called.wait(), timeout=1)
@@ -20,6 +21,7 @@ async def test_background_queue_executes_job_successfully():
     stored = queue.get_job(record.id)
     assert stored is not None
     assert stored.status == "succeeded"
+    assert stored.result is True
     await queue.stop()
 
 
@@ -37,4 +39,5 @@ async def test_background_queue_records_failures():
     assert stored is not None
     assert stored.status == "failed"
     assert stored.error == "boom"
+    assert stored.result is None
     await queue.stop()
