@@ -36,6 +36,7 @@
 - [x] Security headers (HSTS, X-Content-Type-Options, Content-Security-Policy `default-src 'self'`, cache-control)
 - [x] Audit log export (`/api/v1/admin/audit` returns recent JSON events)
 - [x] Background jobs (`BACKGROUND_JOBS_ENABLED=true` queues dedupe/rebuild/ingest work; `/api/v1/jobs` exposes status + results)
+- [x] Observability assets (Grafana dashboard + Prometheus alerts in `docs/infra/metrics_alerts/`)
 
 ### Robustness
 - [x] Comprehensive error handling (domain-specific + fallback handlers)
@@ -60,6 +61,7 @@
 - **API key dependency:** FastAPI routes can depend on `APIKeyAuth` to guarantee scope checks. Example: `@router.post("/ingest", dependencies=[Depends(APIKeyAuth(("write",)))])` or inject directly: `async def ingest(principal: APIKeyPrincipal = Depends(APIKeyAuth(("write",))))`.
 - **Metrics:** `/metrics` exposes `ask_requests_total`, `ask_request_latency_seconds` (including a startup `baseline` sample), `ingest_operations_total{source, outcome}`, `ingest_operation_latency_seconds{source, outcome}`, and `chunk_records_total` so dashboards can chart query volume, tail latencies, ingest throughput/failures, and index readiness in real time.
 - **Quota metrics & alerts:** Workspace quotas now export `workspace_quota_usage{workspace_id,metric}` (requests_today, requests_current_minute, chunks_today, chunk_total) and `workspace_quota_ratio{workspace_id,metric}` (requests_per_day, requests_per_minute, chunk_storage). When ratios exceed 0.9 the server emits `quota.threshold` logs—wire Prometheus alerts on these gauges to page ops before hard 429s trigger.
+- **Dashboards & alerting:** Import `docs/infra/metrics_alerts/mini-rag-dashboard.json` into Grafana and load `mini-rag-alerts.yml` into Prometheus/Alertmanager (see README in the same directory for deployment steps).
 - **Billing integration:** Provide `STRIPE_API_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL`, and `STRIPE_PORTAL_RETURN_URL` to enable `/api/v1/billing/checkout`, `/api/v1/billing/portal`, and `/api/v1/billing/webhook` (legacy `/api/billing/*` aliases remain). Checkout metadata carries `organization_id` so webhooks update `organizations.billing_status`.
 - **Ingestion gating:** `/api/ingest_urls` and `/api/ingest_files` call `_require_billing_active`. Trials (`billing_status=trialing`) work until `trial_ends_at`; `past_due`, `canceled`, or expired subscriptions yield HTTP 402 with `billing.blocked` logs, preventing new content uploads while queries remain available.
 - **UI navigation:** The web client now features a persistent header, breadcrumb trail, toast notifications, and ESC-dismissable chunk modal. See `docs/guides/UI_NAVIGATION.md` for flows and future enhancements.

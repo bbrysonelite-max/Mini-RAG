@@ -32,6 +32,10 @@
 - Audit logging: `_log_event` writes to `logs/audit.log`, `/api/v1/admin/audit` exposes recent entries for admins, and tests validate access + JSON output.
 - CI hardening: pip-audit runs in GitHub workflow with placeholders gated by `ALLOW_INSECURE_DEFAULTS=true` to catch vulnerable dependencies before merge.
 - Background queue: ingestion URLs/files enqueue when `BACKGROUND_JOBS_ENABLED`; `_ingest_*_core` helpers reuse logic, job results surface through `/api/v1/jobs`, and tests cover queued endpoints and UI handles queued states.
+- Observability inventory: cataloged all Prometheus metrics (ask/ingest/quota/jobs/external) in `docs/guides/Phase8_Plan.md` with dashboard and alert mappings to drive upcoming Grafana/Alertmanager artifacts.
+- Grafana/AlertManager templates: added `docs/infra/metrics_alerts/mini-rag-dashboard.json` and `mini-rag-alerts.yml` to cover latency/error/quota/job/external monitors; Phase 8 plan updated with import instructions.
+- Observability docs: `docs/infra/metrics_alerts/README.md`, `docs/guides/Phase8_Plan.md`, and `docs/guides/QUICK_REFERENCE.md` now capture deployment steps, runbook guidance, and links to the new monitoring assets.
+- Metrics validation: `tests/test_metrics_endpoint.py` scrapes `/metrics` after seeding counters/histograms and running a background job, asserting all key metrics are exported (ask/ingest/quota/external/job).
 
 ---
 # Phase 5 API Key Infrastructure (Nov 19, 2025)
@@ -901,3 +905,14 @@ All changes followed these principles:
 #### Background Worker Notes
 - Y1: Queue should accept rebuild/dedupe maintenance jobs, emit structured logs/metrics, allow operators to inspect status via `/api/v1/jobs`, and remain optional via `BACKGROUND_JOBS_ENABLED` env flag (fallback to synchronous behavior when disabled).
 - Y2–Y6: `background_queue.BackgroundTaskQueue` now backs optional rebuild/dedupe jobs, `/api/v1/jobs` exposes recent history, Prometheus counters/histograms track queue flow, docs outline operations, and tests cover queue success/failure plus job API access.
+
+# Session Plan – Nov 23, 2025 (Observability Dashboards)
+
+**Goal:** Finish Phase 8-O2 by shipping actionable metrics artifacts (dashboards, alert rules, docs) so operators can monitor latency, quota, and background jobs.
+
+## TODOs
+- [x] **O1:** Inventory current Prometheus metrics (ask/ingest/job/quota) and map them to required dashboards/alerts.
+- [x] **O2:** Author Grafana dashboard + alert rule templates (YAML/JSON) capturing latency, errors, quota breaches, and job failures.
+- [x] **O3:** Update docs (`docs/guides/Phase8_Plan.md` + `docs/infra/`) with deployment steps, alert thresholds, and runbook guidance.
+- [x] **O4:** Add regression tests or scripts validating metric registration and include any necessary exporter wiring.
+- [ ] **O5:** Summarize outcomes in Review section (metrics artifacts, docs, validation) once complete.

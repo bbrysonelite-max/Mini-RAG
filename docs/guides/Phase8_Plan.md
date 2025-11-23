@@ -72,6 +72,7 @@ Deliver enterprise-grade observability, background processing, and compliance co
   - Every incident ticket must include `request_id` (from client toast or API response) to cross-reference logs/traces quickly.
   - Escalation checklist: 1) check `/metrics` for error spikes; 2) review `healthcheck.ping_failed`; 3) inspect traces for external latency (Stripe/OpenAI).
   - Provide `scripts/oncall/log_sample.sh <request_id>` (TODO) to fetch representative log lines when SSH access is available.
+  - Import Grafana/Alertmanager assets from `docs/infra/metrics_alerts/` (see README for deployment steps) during production onboarding.
 - **Access Controls**
   - Restrict OTLP collector credentials via `OTEL_EXPORTER_OTLP_HEADERS`; rotate monthly and store in secrets manager.
   - Logs shipped to central storage must be tagged with tenant identifiers and comply with deletion/export requests.
@@ -126,7 +127,27 @@ Deliver enterprise-grade observability, background processing, and compliance co
   - `external_request_errors_total{service,operation}` currently wired for Stripe checkout/portal/webhook failures (OpenAI wiring pending).
 - Instrumented ingestion flows to increment counters with 200/400/500-class status codes, record processed chunk counts, and capture fallback outcomes.
 - Stripe API error paths now bump the external error counter, complementing existing log breadcrumbs.
-- Next steps: expose Alertmanager rule templates + Grafana dashboards under `docs/infra/` and extend external-error coverage to OpenAI once background workers land.
+- Next steps: expose Alertmanager rule templates + Grafana dashboards under `docs/infra/metrics_alerts/` and extend external-error coverage to OpenAI once background workers land.
+
+#### Step 4 – Metrics → Dashboard/Alert Mapping (Nov 23, 2025)
+
+| Metric | Type | Key Labels | Dashboard Panels | Candidate Alerts |
+| --- | --- | --- | --- | --- |
+| `ask_requests_total` | Counter | `outcome`, `status_code` | Ask throughput (requests/min), error rate split by status | Error ratio >2% over 5m (`sum(rate(…{outcome="error"}[5m])) / sum(rate(…[5m])) > 0.02`) |
+| `ask_request_latency_seconds` | Histogram | `outcome` | Ask latency p50/p95/p99 via `histogram_quantile` | P95 >3s for 5m (`histogram_quantile(0.95, sum(rate(..._bucket[5m])) by (le)) > 3`) |
+| `ingest_operations_total` | Counter | `source`, `outcome`, `status_code` | Ingest success vs failure stacked bars; source distribution | Ingest failure rate >10% or sustained `status_code` 5xx spikes |
+| `ingest_operation_latency_seconds` | Histogram | `source`, `outcome` | Ingest latency per source | P95 ingest latency >10s for 10m |
+| `ingest_processed_chunks_total` | Counter | `source` | Chunks ingested per minute (rate) | Alert if rate drops to 0 during scheduled ingestion windows |
+| `chunk_records_total` | Gauge | — | Index size trendline | Alert if deviates sharply (>20% drop) from 6h moving average |
+| `workspace_quota_usage` | Gauge | `workspace_id`, `metric` | Quota usage table (requests today/minute, chunks) | Alert when usage within 10% of limit for >10m |
+| `workspace_quota_ratio` | Gauge | `workspace_id`, `metric` | Quota heatmap (ratio) | Alert when ratio >0.9 for 10m (`max_over_time(...[10m]) > 0.9`) |
+| `quota_exceeded_total` | Counter | `workspace_id`, `metric` | 429/Quota breach counter | Alert on >5 increments over 5m (service degradation) |
+| `external_request_errors_total` | Counter | `service`, `operation` | Dependency health (Stripe/OpenAI) | Alert when Stripe/OpenAI errors >3/min |
+| `background_jobs_submitted_total` | Counter | `name` | Job submission volume | Alert if submissions spike unexpectedly |
+| `background_jobs_completed_total` | Counter | `name`, `status` | Job success vs failure pie/bar | Alert on failed jobs >0 in 5m |
+| `background_job_duration_seconds` | Histogram | `name` | Job duration percentiles | Alert if P95 duration exceeds SLA (e.g., >120s) |
+
+> Dashboard templates now live in `docs/infra/metrics_alerts/mini-rag-dashboard.json`; corresponding alert rules in `docs/infra/metrics_alerts/mini-rag-alerts.yml`. Import into Grafana/Prometheus and adjust thresholds per environment.
 
 ### P8-Q1: Background Workers
 - Introduce a job queue (Celery/RQ/Temporal) for asynchronous embedding, large ingests, and scheduled re-indexing.

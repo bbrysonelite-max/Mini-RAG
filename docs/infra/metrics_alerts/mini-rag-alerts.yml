@@ -1,0 +1,84 @@
+groups:
+  - name: mini-rag-slo.rules
+    rules:
+      - alert: MiniRAGAskLatencyP95TooHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(ask_request_latency_seconds_bucket[5m])) by (le)) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: mini-rag
+        annotations:
+          summary: "Ask latency p95 above 3s"
+          description: |
+            Ask requests are exceeding the SLO (p95 > 3 seconds) for more than 5 minutes.
+            Check recent deployments, upstream LLM latency, and database load.
+
+      - alert: MiniRAGAskErrorRatioHigh
+        expr: |
+          sum(rate(ask_requests_total{outcome="error"}[5m]))
+            /
+          sum(rate(ask_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+          service: mini-rag
+        annotations:
+          summary: "Ask error ratio above 2%"
+          description: |
+            Ask request error ratio exceeded 2% for 5 minutes. Inspect server logs, quota guards,
+            and external dependency errors to locate the regression.
+
+      - alert: MiniRAGIngestFailureRateHigh
+        expr: |
+          sum(rate(ingest_operations_total{outcome="failure"}[5m]))
+            /
+          sum(rate(ingest_operations_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: mini-rag
+        annotations:
+          summary: "Ingest failure rate above 10%"
+          description: |
+            Ingestion failures surpassed 10% of total operations. Verify billing status (HTTP 402),
+            quota saturation, and worker logs for transient errors.
+
+      - alert: MiniRAGQuotaSaturation
+        expr: |
+          max_over_time(workspace_quota_ratio[10m]) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          service: mini-rag
+        annotations:
+          summary: "Workspace quota utilization above 90%"
+          description: |
+            At least one workspace is approaching its quota limit. Coordinate with the customer
+            to raise limits or enable billing before ingestion is blocked.
+
+      - alert: MiniRAGBackgroundJobFailures
+        expr: |
+          sum(rate(background_jobs_completed_total{status="failed"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: mini-rag
+        annotations:
+          summary: "Background job failures detected"
+          description: |
+            Background queue jobs are failing repeatedly. Inspect /api/v1/jobs and server logs to
+            identify problematic job types and inputs.
+
+      - alert: MiniRAGExternalDependencyErrors
+        expr: |
+          sum(rate(external_request_errors_total[5m])) by (service) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: mini-rag
+        annotations:
+          summary: "External dependency errors >3/min"
+          description: |
+            Upstream dependency "{{ $labels.service }}" is returning errors. Check Stripe/OpenAI dashboards
+            and ensure credentials, network access, and rate limits are healthy.
