@@ -30,6 +30,7 @@
 - Security hardening: `config_utils.ensure_not_placeholder` now enforces non-placeholder secrets across session cookies, Stripe, and LLM providers; docs highlight the new requirement and pytest config opts into `ALLOW_INSECURE_DEFAULTS`.
 - Security headers tightened: default CSP now locks `default-src 'self'`, forbids `object-src`, denies framing, and responses emit cache-control/no-store alongside existing HSTS/XSS protections.
 - Audit logging: `_log_event` writes to `logs/audit.log`, `/api/v1/admin/audit` exposes recent entries for admins, and tests validate access + JSON output.
+- CI hardening: pip-audit runs in GitHub workflow with placeholders gated by `ALLOW_INSECURE_DEFAULTS=true` to catch vulnerable dependencies before merge.
 - _Pending approval & execution._
 
 ---
