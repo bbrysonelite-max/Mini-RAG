@@ -10,6 +10,8 @@ import os
 from typing import List, Optional
 import logging
 
+from correlation import build_observability_headers
+from config_utils import ensure_not_placeholder
 from model_service import (
     ModelService,
     GenerateOptions,
@@ -51,7 +53,12 @@ class ConcreteModelService(ModelService):
         if self._openai_client is None:
             try:
                 import openai
-                api_key = os.getenv("OPENAI_API_KEY")
+                api_key = ensure_not_placeholder(
+                    "OPENAI_API_KEY",
+                    os.getenv("OPENAI_API_KEY"),
+                    {"sk_test_placeholder", "sk-openai-placeholder"},
+                    required=False,
+                )
                 if api_key:
                     self._openai_client = openai.OpenAI(api_key=api_key)
                 else:
@@ -65,7 +72,12 @@ class ConcreteModelService(ModelService):
         if self._anthropic_client is None:
             try:
                 import anthropic
-                api_key = os.getenv("ANTHROPIC_API_KEY")
+                api_key = ensure_not_placeholder(
+                    "ANTHROPIC_API_KEY",
+                    os.getenv("ANTHROPIC_API_KEY"),
+                    {"anthropic-placeholder"},
+                    required=False,
+                )
                 if api_key:
                     self._anthropic_client = anthropic.Anthropic(api_key=api_key)
                 else:
@@ -148,7 +160,10 @@ class ConcreteModelService(ModelService):
                 for msg in messages
             ]
             
-            response = client.chat.completions.create(
+            headers = build_observability_headers()
+            request_client = client.with_options(extra_headers=headers) if headers else client
+
+            response = request_client.chat.completions.create(
                 model=config.modelName,
                 messages=openai_messages,
                 max_tokens=max_tokens,
@@ -254,7 +269,10 @@ class ConcreteModelService(ModelService):
             raise RuntimeError("OpenAI client not available")
         
         try:
-            response = client.embeddings.create(
+            headers = build_observability_headers()
+            request_client = client.with_options(extra_headers=headers) if headers else client
+
+            response = request_client.embeddings.create(
                 model=config.modelName,
                 input=texts
             )

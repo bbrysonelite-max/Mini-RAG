@@ -1,6 +1,6 @@
 import os, json, subprocess, hashlib, re, logging, asyncio, time
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Sequence, Tuple
+from typing import List, Optional, Dict, Any, Sequence, Tuple, Set
 from pathlib import Path
 from fastapi import FastAPI, APIRouter, Form, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -61,9 +61,14 @@ except ImportError as e:
     UserService = None
     get_user_service = None
 
+from config_utils import ensure_not_placeholder, allow_insecure_defaults
+
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
 BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
+ALLOW_INSECURE_DEFAULTS = allow_insecure_defaults()
+DEFAULT_SECRET_KEY = "change-this-secret-key-in-production"
+SECRET_KEY_PLACEHOLDERS = {DEFAULT_SECRET_KEY, "changeme"}
 _METRICS_WIRED = False
 INDEX = None
 CHUNKS = []
@@ -114,7 +119,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         csp = os.getenv(
             "CONTENT_SECURITY_POLICY",
-            "default-src 'self'; frame-ancestors 'none'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'",
+            "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
         )
         response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -123,6 +128,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         response.headers.setdefault("X-XSS-Protection", "1; mode=block")
         response.headers.setdefault("Content-Security-Policy", csp)
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Pragma", "no-cache")
         return response
 
 
@@ -200,7 +207,40 @@ def _record_external_error(service: str, operation: str) -> None:
     EXTERNAL_REQUEST_ERRORS.labels(service=service, operation=operation).inc()
 
 # Session middleware (required for OAuth)
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "change-this-secret-key-in-production"))
+def _ensure_not_placeholder(
+    name: str,
+    value: Optional[str],
+    placeholders: Optional[Set[str]] = None,
+    *,
+    required: bool = False,
+) -> Optional[str]:
+    placeholders = placeholders or set()
+    logger_local = logging.getLogger("rag.config")
+
+    if value is None or value == "":
+        if required and not ALLOW_INSECURE_DEFAULTS:
+            raise RuntimeError(f"{name} must be configured before starting the application.")
+        if required:
+            logger_local.warning("%s is not set; running with empty value because ALLOW_INSECURE_DEFAULTS=true", name)
+        return value
+
+    if value in placeholders:
+        if ALLOW_INSECURE_DEFAULTS:
+            logger_local.warning("%s is using a placeholder value; do not use this in production.", name)
+            return value
+        raise RuntimeError(
+            f"{name} is using a placeholder value. Provide a secure value or set ALLOW_INSECURE_DEFAULTS=true for development."
+        )
+
+    return value
+
+SECRET_KEY_VALUE = ensure_not_placeholder(
+    "SECRET_KEY",
+    os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY),
+    SECRET_KEY_PLACEHOLDERS,
+    required=True,
+)
+app.add_middleware(SessionMiddleware, secret_key=(SECRET_KEY_VALUE or DEFAULT_SECRET_KEY))
 app.add_middleware(CorrelationIdMiddleware)
 
 # Rate limiting
@@ -711,9 +751,24 @@ API_KEY_SERVICE: Optional[ApiKeyService] = None
 QUOTA_SERVICE: Optional[QuotaService] = None
 BILLING_SERVICE: Optional[BillingService] = None
 
-STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+STRIPE_API_KEY = ensure_not_placeholder(
+    "STRIPE_API_KEY",
+    os.getenv("STRIPE_API_KEY"),
+    {"sk_test_placeholder"},
+    required=False,
+)
+STRIPE_WEBHOOK_SECRET = ensure_not_placeholder(
+    "STRIPE_WEBHOOK_SECRET",
+    os.getenv("STRIPE_WEBHOOK_SECRET"),
+    {"whsec_placeholder"},
+    required=False,
+)
+STRIPE_PRICE_ID = ensure_not_placeholder(
+    "STRIPE_PRICE_ID",
+    os.getenv("STRIPE_PRICE_ID"),
+    {"price_123"},
+    required=False,
+)
 STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:8000/app/billing/success")
 STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "http://localhost:8000/app/billing/cancel")
 STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "http://localhost:8000/app/settings/billing")

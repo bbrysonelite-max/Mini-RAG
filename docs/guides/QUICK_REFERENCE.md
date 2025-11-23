@@ -32,7 +32,8 @@
 - [x] CORS configuration (`CORS_ALLOW_ORIGINS` env with sane defaults)
 - [x] XSS prevention (CSP + sanitized JSON error payloads)
 - [x] Error message sanitization (custom handlers, structured logging)
-- [x] Security headers (CSP, HSTS, X-Content-Type-Options, etc.)
+- [x] Secret management guardrails (`SECRET_KEY`/Stripe placeholders block startup unless `ALLOW_INSECURE_DEFAULTS=true` for local dev)
+- [x] Security headers (HSTS, X-Content-Type-Options, Content-Security-Policy `default-src 'self'`, cache-control)
 
 ### Robustness
 - [x] Comprehensive error handling (domain-specific + fallback handlers)
@@ -187,4 +188,16 @@
 ---
 
 **Bottom Line:** The codebase has a solid foundation but needs 3-6 months of focused development to be commercially viable. Start with security fixes immediately.
+
+### Required Environment Variables
+```bash
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+SECRET_KEY=...
+DATABASE_URL=postgresql://user:pass@localhost/rag_brain
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=...  # optional, for Claude models
+# Optional: allow placeholder secrets during local development
+ALLOW_INSECURE_DEFAULTS=true
+```
 

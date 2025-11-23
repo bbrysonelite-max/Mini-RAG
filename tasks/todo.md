@@ -27,6 +27,8 @@
 - P6-U4/X5: Billing-aware messaging highlights when Stripe or quotas block ingestion, and the billing card communicates disabled/test conditions so operators know how to unblock customers.
 - P6-U5/X6: Added `:focus-visible` outlines plus keyboard shortcuts (Cmd/Ctrl+Enter to ask, Cmd/Ctrl+K to focus input) while keeping ESC-to-close, improving accessibility and keyboard ergonomics across sections.
 - H5: **Code review briefing:** focus on `server.py` (auth context, session secrets, billing init), `rag_pipeline.py` (embedding loop + pgvector fallback), `billing_service.py` (Stripe workflows), and recent client/test additions (`clients/sdk.py`, `tests/test_sdk.py`, `tests/test_rag_pipeline.py`). Validate remaining Phase 6 UI work (navigation shell, ingest UX, dashboard, accessibility) before merge, and confirm operational prerequisites: purge sample chunks, inject production `SECRET_KEY`, and provide real Stripe/OpenAI credentials plus pgvector connectivity.
+- Security hardening: `config_utils.ensure_not_placeholder` now enforces non-placeholder secrets across session cookies, Stripe, and LLM providers; docs highlight the new requirement and pytest config opts into `ALLOW_INSECURE_DEFAULTS`.
+- Security headers tightened: default CSP now locks `default-src 'self'`, forbids `object-src`, denies framing, and responses emit cache-control/no-store alongside existing HSTS/XSS protections.
 - _Pending approval & execution._
 
 ---
@@ -888,13 +890,12 @@ All changes followed these principles:
 
 ### Execution Plan – Phase 8 Background Workers (Nov 21, 2025)
 - [x] **Y1:** Capture requirements for asynchronous ingestion/rebuild flows (jobs to queue, telemetry needs, operational controls) in `tasks/todo.md`.
-- [ ] **Y2:** Implement lightweight background task queue (asyncio-based) plus minimal job registry/metrics in a new module (e.g., `background_queue.py`).
-- [ ] **Y3:** Integrate queue into `server.py` startup/shutdown and add `/api/v1/jobs` status endpoint.
-- [ ] **Y4:** Update rebuild/dedupe endpoints to optionally enqueue work when `BACKGROUND_JOBS_ENABLED` is set, returning job IDs while preserving synchronous fallback for ingestion.
-- [ ] **Y5:** Add metrics/logging for job lifecycle and extend docs (`docs/guides/Phase8_Plan.md`) with operations guidance.
-- [ ] **Y6:** Write regression tests for the queue + status endpoint (unit tests for task queue, API tests mocking job execution).
+- [x] **Y2:** Implement lightweight background task queue (asyncio-based) plus minimal job registry/metrics in a new module (e.g., `background_queue.py`).
+- [x] **Y3:** Integrate queue into `server.py` startup/shutdown and add `/api/v1/jobs` status endpoint.
+- [x] **Y4:** Update rebuild/dedupe endpoints to optionally enqueue work when `BACKGROUND_JOBS_ENABLED` is set, returning job IDs while preserving synchronous fallback for ingestion.
+- [x] **Y5:** Add metrics/logging for job lifecycle and extend docs (`docs/guides/Phase8_Plan.md`) with operations guidance.
+- [x] **Y6:** Write regression tests for the queue + status endpoint (unit tests for task queue, API tests mocking job execution).
 
 #### Background Worker Notes
 - Y1: Queue should accept rebuild/dedupe maintenance jobs, emit structured logs/metrics, allow operators to inspect status via `/api/v1/jobs`, and remain optional via `BACKGROUND_JOBS_ENABLED` env flag (fallback to synchronous behavior when disabled).
-
----
+- Y2–Y6: `background_queue.BackgroundTaskQueue` now backs optional rebuild/dedupe jobs, `/api/v1/jobs` exposes recent history, Prometheus counters/histograms track queue flow, docs outline operations, and tests cover queue success/failure plus job API access.
