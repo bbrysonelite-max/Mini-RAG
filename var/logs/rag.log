@@ -1,0 +1,54 @@
+2025-11-18 09:11:00,279 - rag - INFO - Created new user: test@example.com with role: admin
+2025-11-18 09:11:00,279 - rag - INFO - Updated user 73c4d7c5-b535-4c95-a145-0b026aa7c6ce role to: editor
+2025-11-18 09:39:12,568 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 09:39:15,821 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 09:45:52,668 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 09:53:53,124 - rag - INFO - Redirect URI: http://127.0.0.1:8000/auth/google/callback
+2025-11-18 09:58:57,329 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 09:59:02,867 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:00:07,992 - rag - INFO - Redirect URI: http://127.0.0.1:8000/auth/google/callback
+2025-11-18 10:15:22,147 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:16:18,851 - rag - INFO - Redirect URI: http://127.0.0.1:8000/auth/google/callback
+2025-11-18 10:17:44,146 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:17:44,891 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:17:47,357 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:17:51,029 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:25:55,126 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:25:59,882 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:26:32,820 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:26:35,342 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:38:32,512 - rag - INFO - Created new user: test@example.com with role: admin
+2025-11-18 10:38:32,514 - rag - INFO - Created new user: reader@example.com with role: reader
+2025-11-18 10:38:32,514 - rag - INFO - Updated user 437a804e-7b6d-4330-9ef6-d806a1642d3e role to: editor
+2025-11-18 10:38:32,515 - rag - INFO - Updated existing user: test@example.com
+2025-11-18 10:39:01,305 - rag - INFO - Created new user: test@example.com with role: admin
+2025-11-18 10:39:01,306 - rag - INFO - Created new user: reader@example.com with role: reader
+2025-11-18 10:39:01,306 - rag - INFO - Updated user 54550157-2caf-43f3-9ddd-968de689216b role to: editor
+2025-11-18 10:39:01,306 - rag - INFO - Updated existing user: test@example.com
+2025-11-18 10:57:35,846 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:57:37,078 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 10:57:39,813 - rag - INFO - No DATABASE_URL configured - running without database
+2025-11-18 11:11:12,435 - rag - ERROR - Index not found at out/chunks.jsonl
+2025-11-18 11:11:12,436 - rag - ERROR - RAG Error: Index not found. Please ingest documents first.
+Traceback (most recent call last):
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/fastapi/routing.py", line 111, in app
+    response = await f(request)
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/fastapi/routing.py", line 391, in app
+    raw_response = await run_endpoint_function(
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/fastapi/routing.py", line 292, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/starlette/concurrency.py", line 38, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/anyio/to_thread.py", line 56, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/anyio/_backends/_asyncio.py", line 2485, in run_sync_in_worker_thread
+    return await future
+  File "/Users/brentbryson/Desktop/mini-rag/venv/lib/python3.9/site-packages/anyio/_backends/_asyncio.py", line 976, in run
+    result = context.run(func, *args)
+  File "/Users/brentbryson/Desktop/mini-rag/server.py", line 730, in get_sources
+    ensure_index()
+  File "/Users/brentbryson/Desktop/mini-rag/server.py", line 248, in ensure_index
+    raise IndexNotFoundError("Index not found. Please ingest documents first.")
+server.IndexNotFoundError: Index not found. Please ingest documents first.

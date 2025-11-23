@@ -1109,7 +1109,13 @@ async def get_me(request: Request):
         }
     return {"authenticated": False}
 
-@app.post("/ask")
+@app.post(
+    "/ask",
+    summary="Query the RAG system",
+    description="Submit a natural language question and retrieve relevant chunks with AI-generated answers. Requires authentication (JWT or API key with read scope). Rate limited to 30 requests/minute.",
+    response_description="Answer text, score metrics, and retrieved source chunks",
+    tags=["Query"]
+)
 @limiter.limit("30/minute")
 async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
@@ -1213,10 +1219,22 @@ def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optio
         "chunks": chunk_details
     }
 
-@app.get("/api/stats")
+@app.get(
+    "/api/stats",
+    summary="Get system statistics",
+    description="Returns basic system stats including total chunk count. Useful for dashboard widgets.",
+    tags=["System"]
+)
 def stats():
     return {"count": _count_lines(CHUNKS_PATH)}
-api_v1.get("/stats")(stats)
+
+# Also expose on v1
+api_v1.get(
+    "/stats",
+    summary="Get system statistics",
+    description="Returns basic system stats including total chunk count. Useful for dashboard widgets.",
+    tags=["System"]
+)(stats)
 
 
 @api_v1.get("/jobs")
@@ -1479,7 +1497,12 @@ async def _ingest_urls_core(
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 
-@app.post("/api/ingest_files")
+@app.post(
+    "/api/ingest_files",
+    summary="Upload and ingest documents",
+    description="Upload multiple files (PDF, DOCX, Markdown, TXT, VTT, SRT) for ingestion. Requires write scope and active billing. Enforces workspace quotas. Rate limited to 10 uploads/hour.",
+    tags=["Ingestion"]
+)
 @app.post("/ingest/files")
 @limiter.limit("10/hour")
 async def ingest_files(request: Request, files: List[UploadFile] = File(...), language: str = Form("en")):
@@ -1793,7 +1816,12 @@ async def dedupe(request: Request):
 
 api_v1.post("/dedupe")(dedupe)
 
-@app.get("/api/sources")
+@app.get(
+    "/api/sources",
+    summary="List ingested sources",
+    description="Returns all document sources ingested by the authenticated user/workspace. Each source includes metadata like type, path, and chunk counts.",
+    tags=["Sources"]
+)
 async def get_sources(request: Request):
     """List all unique sources with metadata (filtered by user)."""
     ensure_index()
@@ -1846,6 +1874,47 @@ async def delete_source(request: Request, source_id: str):
     _chunk_count_stamp = None
     return result
 api_v1.delete("/sources/{source_id}")(delete_source)
+
+@app.post(
+    "/api/sources/batch_delete",
+    summary="Batch delete multiple sources",
+    description="Delete multiple sources and their chunks in one operation. Requires write scope. Returns count of deleted sources.",
+    tags=["Sources"]
+)
+async def batch_delete_sources(request: Request, source_ids: List[str]):
+    """Delete multiple sources at once."""
+    user, workspace_id, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("write",),
+        require=True,
+    )
+    
+    global INDEX, CHUNKS, _chunk_count_cache, _chunk_count_stamp
+    
+    deleted_count = 0
+    total_kept = 0
+    
+    for source_id in source_ids:
+        try:
+            result = delete_source_chunks(CHUNKS_PATH, source_id, workspace_id=workspace_id)
+            deleted_count += 1
+            total_kept = result.get("kept", 0)
+        except Exception as e:
+            logger.error(f"Failed to delete source {source_id}: {e}")
+    
+    # Invalidate caches
+    INDEX = None
+    CHUNKS = []
+    _chunk_count_cache = None
+    _chunk_count_stamp = None
+    
+    return {
+        "deleted": deleted_count,
+        "failed": len(source_ids) - deleted_count,
+        "kept": total_kept
+    }
+
+api_v1.post("/sources/batch_delete")(batch_delete_sources)
 
 @app.get("/api/sources/{source_id}/preview")
 async def get_source_preview(request: Request, source_id: str, limit: int = 3):

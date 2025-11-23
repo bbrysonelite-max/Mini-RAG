@@ -1,15 +1,20 @@
 # Quick Reference: Making RAG Commercial-Ready
 
-## 🚨 Critical Issues (Fix Immediately)
+## 🚨 Critical Issues (Status as of Nov 2025)
 
-| Issue | Severity | Impact | Fix Time |
-|-------|----------|--------|----------|
-| No Authentication | 🔴 CRITICAL | Anyone can access/modify data | 1-2 days |
-| File Upload Vulnerabilities | 🔴 CRITICAL | Path traversal, malicious files | 1 day |
-| Command Injection | 🔴 CRITICAL | Remote code execution | 1 day |
-| No Input Validation | 🟠 HIGH | DoS, data corruption | 2 days |
-| Poor Error Handling | 🟠 HIGH | System crashes, data loss | 2 days |
-| No Rate Limiting | 🟠 HIGH | DoS attacks | 1 day |
+| Issue | Status | Notes |
+|-------|--------|-------|
+| Authentication | ✅ **FIXED** | Google OAuth + JWT + API keys with scopes |
+| File Upload Vulnerabilities | ✅ **FIXED** | Path sanitization, size limits, type whitelist |
+| Command Injection | ✅ **FIXED** | All subprocess calls use safe parameter passing |
+| Input Validation | ✅ **FIXED** | Pydantic models on all endpoints |
+| Error Handling | ✅ **FIXED** | Structured logging + custom exception handlers |
+| Rate Limiting | ✅ **FIXED** | SlowAPI guards (30 req/min queries, 10/hr uploads) |
+
+**Remaining Production Risks:**
+- 🟡 Demo data still ships in `out/chunks.jsonl` (purge before deployment)
+- 🟡 Docker defaults to placeholder secrets (enforce validation on startup)
+- 🟡 Legacy UI uses mixed `/api/*` and `/api/v1/*` endpoints (normalize)
 
 ## ✅ Quick Wins (Easy Improvements)
 

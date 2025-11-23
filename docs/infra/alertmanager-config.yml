@@ -1,0 +1,152 @@
+# Alertmanager Configuration for Mini-RAG
+# Route alerts by severity and service to appropriate channels
+
+global:
+  # Slack webhook for general alerts
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+  
+  # PagerDuty integration key for critical alerts
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Alert routing tree
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 4h
+  
+  routes:
+    # Critical alerts -> PagerDuty (page on-call)
+    - match:
+        severity: critical
+      receiver: 'pagerduty-critical'
+      continue: true  # Also send to Slack
+    
+    # Critical alerts -> Slack #incidents channel
+    - match:
+        severity: critical
+      receiver: 'slack-incidents'
+      group_wait: 0s
+    
+    # Warning alerts -> Slack #alerts channel
+    - match:
+        severity: warning
+      receiver: 'slack-alerts'
+    
+    # Billing-related alerts -> #billing-ops
+    - match_re:
+        alertname: '(BillingWebhook|SubscriptionFailed|QuotaExceeded)'
+      receiver: 'slack-billing'
+    
+    # Database issues -> #infra-db
+    - match_re:
+        alertname: '(DatabaseDown|PoolExhaustion|SlowQuery)'
+      receiver: 'slack-infra'
+    
+    # External service errors -> #integrations
+    - match_re:
+        alertname: '(OpenAIErrors|StripeErrors|OAuthFailures)'
+      receiver: 'slack-integrations'
+
+# Inhibition rules (suppress redundant alerts)
+inhibit_rules:
+  # If service is down, don't alert on high latency
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match_re:
+      alertname: '(HighLatency|ErrorRate)'
+    equal: ['service']
+  
+  # If database is down, don't alert on app errors
+  - source_match:
+      alertname: 'DatabaseDown'
+    target_match:
+      severity: 'warning'
+    equal: ['cluster']
+
+# Receiver definitions
+receivers:
+  - name: 'default'
+    slack_configs:
+      - channel: '#alerts'
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          {{ end }}
+        send_resolved: true
+  
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: |
+          {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}
+        details:
+          severity: '{{ .CommonLabels.severity }}'
+          instance: '{{ .CommonLabels.instance }}'
+          description: '{{ .CommonAnnotations.description }}'
+        send_resolved: true
+  
+  - name: 'slack-incidents'
+    slack_configs:
+      - channel: '#incidents'
+        title: '🚨 CRITICAL: {{ .CommonLabels.alertname }}'
+        text: |
+          *Service:* {{ .CommonLabels.service }}
+          *Instance:* {{ .CommonLabels.instance }}
+          
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Runbook:* {{ .Annotations.runbook_url }}
+          {{ end }}
+        color: 'danger'
+        send_resolved: true
+  
+  - name: 'slack-alerts'
+    slack_configs:
+      - channel: '#alerts'
+        title: '⚠️ WARNING: {{ .CommonLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          {{ .Annotations.summary }}
+          {{ end }}
+        color: 'warning'
+        send_resolved: true
+  
+  - name: 'slack-billing'
+    slack_configs:
+      - channel: '#billing-ops'
+        title: '💳 Billing Alert: {{ .CommonLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Workspace:* {{ .Labels.workspace_id }}
+          *Organization:* {{ .Labels.organization_id }}
+          {{ .Annotations.summary }}
+          {{ end }}
+        send_resolved: true
+  
+  - name: 'slack-infra'
+    slack_configs:
+      - channel: '#infra-db'
+        title: '🗄️ Infrastructure: {{ .CommonLabels.alertname }}'
+        send_resolved: true
+  
+  - name: 'slack-integrations'
+    slack_configs:
+      - channel: '#integrations'
+        title: '🔌 External Service: {{ .CommonLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Service:* {{ .Labels.external_service }}
+          {{ .Annotations.summary }}
+          {{ end }}
+        send_resolved: true
+
+# Slack notification templates
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+

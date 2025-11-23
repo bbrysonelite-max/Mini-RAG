@@ -361,7 +361,7 @@ async function refreshBillingStatus(){
 async function refreshStatsCard(){
   if(!metricDocCount){ return; }
   try{
-    const r=await fetch("/api/stats");
+    const r=await fetch("/api/v1/stats");
     if(!r.ok){
       metricDocCount.textContent = "–";
       return;
@@ -373,15 +373,38 @@ async function refreshStatsCard(){
   }
 }
 
+async function loadWorkspaces(){
+  if(!workspaceSelect) return;
+  try{
+    const r=await fetch("/api/v1/admin/workspaces");
+    if(!r.ok) throw new Error("Failed to load workspaces");
+    const d=await r.json();
+    const workspaces=d.workspaces || [];
+    workspaceSelect.innerHTML = "";
+    if(workspaces.length === 0){
+      workspaceSelect.innerHTML = '<option value="default">Default workspace</option>';
+    } else {
+      workspaces.forEach(ws => {
+        const opt = document.createElement("option");
+        opt.value = ws.id;
+        opt.textContent = ws.name;
+        workspaceSelect.appendChild(opt);
+      });
+    }
+    const storedWorkspace=localStorage.getItem("activeWorkspace");
+    if(storedWorkspace && Array.from(workspaceSelect.options).some(o => o.value === storedWorkspace)){
+      workspaceSelect.value=storedWorkspace;
+    }
+    if(workspaceLabel){
+      const selected=workspaceSelect.options[workspaceSelect.selectedIndex];
+      workspaceLabel.textContent=selected?.text || workspaceSelect.value;
+    }
+  }catch(e){
+    console.warn("Workspace load failed, using defaults:", e);
+    workspaceSelect.innerHTML = '<option value="default">Default workspace</option>';
+  }
+}
 if(workspaceSelect){
-  const storedWorkspace=localStorage.getItem("activeWorkspace");
-  if(storedWorkspace){
-    workspaceSelect.value=storedWorkspace;
-  }
-  if(workspaceLabel){
-    const selected=workspaceSelect.options[workspaceSelect.selectedIndex];
-    workspaceLabel.textContent=selected?.text || workspaceSelect.value;
-  }
   workspaceSelect.addEventListener("change",()=>{
     const selected=workspaceSelect.options[workspaceSelect.selectedIndex];
     localStorage.setItem("activeWorkspace", workspaceSelect.value);
@@ -390,6 +413,7 @@ if(workspaceSelect){
     }
     showToast(`Workspace set to ${selected?.text || workspaceSelect.value}`);
   });
+  loadWorkspaces();
 }
 
 function highlightText(text, query){
@@ -821,7 +845,7 @@ mic.onclick=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognit
 let allSources = [];
 async function loadSources(){
   try{
-    const r=await fetch("/api/sources"); const d=await r.json();
+    const r=await fetch("/api/v1/sources"); const d=await r.json();
     allSources = d.sources || [];
     renderSources();
   }catch(e){
@@ -869,7 +893,7 @@ $("sourceFilter").oninput = renderSources;
 $("refreshSources").onclick = loadSources;
 async function viewSource(id){
   try{
-    const r=await fetch(`/api/sources/${id}/chunks`); const d=await r.json();
+    const r=await fetch(`/api/v1/sources/${id}/chunks`); const d=await r.json();
     const chunks = d.chunks || [];
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;overflow:auto;padding:2rem';
@@ -915,7 +939,7 @@ async function viewSource(id){
 async function deleteSource(id){
   if(!confirm('Delete this source and all its chunks?')) return;
   try{
-    const r=await fetch(`/api/sources/${id}`,{method:'DELETE'}); const d=await r.json();
+    const r=await fetch(`/api/v1/sources/${id}`,{method:'DELETE'}); const d=await r.json();
     await loadSources();
     if(countEl) countEl.textContent = d.kept || 0;
     alert(`Deleted ${d.deleted || 0} chunks. ${d.kept || 0} chunks remaining.`);
@@ -1016,7 +1040,7 @@ if(window.location.search.includes("error=auth_failed")){
   await refreshBillingStatus();
   refreshLastIngestCard();
   try{
-    const r=await fetch("/api/stats"); const d=await r.json();
+    const r=await fetch("/api/v1/stats"); const d=await r.json();
     if(countEl) countEl.textContent = d.count || 0;
   }catch(e){}
 })();

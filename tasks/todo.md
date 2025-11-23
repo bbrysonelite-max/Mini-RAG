@@ -1,3 +1,25 @@
+# Session Plan – Nov 23, 2025 (Project Review Backlog Synthesis)
+
+**Goal:** Evaluate the current codebase and documentation to assemble a prioritized backlog that captures outstanding work across backend, frontend, infrastructure, and operations.
+
+## TODOs
+- [x] **R1: Inventory shipped functionality vs. roadmap** – Cross-check implemented features against `ROADMAP.md`, `CHANGELOG.md`, and recent docs to surface drift and missing updates.
+- [x] **R2: Assess UI, docs, and operational readiness** – Review legacy UI, React shell, and guides to identify usability gaps, outdated instructions, and operational risks.
+- [x] **R3: Draft consolidated backlog summary** – Compile the findings into a structured list of action items with suggested priorities and owners (where clear).
+
+## Review
+- R1: `ROADMAP.md` and `docs/guides/QUICK_REFERENCE.md` still reflect the pre-Phase-4 state (last updated Jan 11, 2025). They continue to flag “No authentication” and unchecked Phase 4/5 items even though OAuth, API keys, chunk backups, quotas, billing, and observability landed on Nov 17–21. README also lacks the new billing/quota/API key features. These artifacts need reconciliation with the shipped functionality logged in `CHANGELOG.md`.
+- R2: Legacy UI under `frontend/index.html` mixes `/api` and `/api/v1` routes, never populates the workspace selector, and still hard-codes legacy admin placeholders; React shell lacks auth context, retry states, and billing awareness. Operational docs omit current prerequisites: `docker-compose.yml` ships Stripe/test secrets and `SECRET_KEY=changeme`, `out/chunks.jsonl` contains sample data, and `env.template` doesn’t mention new Stripe/OTEL/Quota flags—rich docs exist elsewhere but the quick start paths don’t surface them.
+- R3 Backlog (owners in parentheses):
+  - **Docs & Enablement (Docs agent):** Update `ROADMAP.md`, `README.md`, and `docs/guides/QUICK_REFERENCE.md` with Phase 4/5 features, add Stripe/OTEL/quota variables to `env.template`, and link the billing/observability guides from the quick start path.
+  - **Runtime Hardening (Infra agent):** Replace placeholder defaults in `docker-compose.yml` with `ALLOW_INSECURE_DEFAULTS` gating, add a startup check that refuses to boot with demo secrets or sample `out/chunks.jsonl`, and script a `make scrub-demo-data` helper.
+  - **Legacy UI Polish (Frontend agent):** Normalize all fetches to `/api/v1`, wire the workspace selector to `/api/v1/admin/workspaces`, surface quota/billing banners pulled from the new metrics, and finish the admin panel instead of the placeholder card.
+  - **React Migration (Frontend/Platform duo):** Port the navigation/billing/ingest states into the React shell, add auth + API key awareness, and align the component API calls + typings with the new backend responses so we can toggle React in production.
+  - **API Surface (Backend agent):** Generate OpenAPI schema with API key security schemes, document scope requirements, and bundle a Postman/environment exporter so contract tests + clients stay in sync.
+  - **Testing & Ops (QA/Infra):** Add automated checks covering billing webhooks + quota counters under Docker Compose, and extend CI to fail when placeholder secrets or demo chunks are present in artifacts.
+
+---
+
 # Phase 3: Authentication & User Management - COMPLETE ✅
 
 **Status:** All tasks completed  
@@ -922,3 +944,16 @@ All changes followed these principles:
 - Authored ready-to-import Grafana dashboard + Prometheus alert rules under `docs/infra/metrics_alerts/` with deployment README.
 - Updated quick reference + Phase 8 plan to reference monitoring assets and runbook steps.
 - Added regression coverage so `/metrics` exposes ask, ingest, quota, external, and background job metrics after queue integration.
+
+---
+
+# Priority List – Nov 23, 2025
+
+**Goal:** Sequence the remaining polish items so we can march toward production readiness without thrash.
+
+## TODOs
+- [ ] **P1: Production deployment bundle** – check in Dockerfile/docker-compose assets, verify `docker compose up --build` works end-to-end, and document the flow in `README.md`.
+- [ ] **P2: Sample data & defaults cleanup** – ensure shipping artifacts no longer include demo chunks (`out/chunks.jsonl`), update scripts to avoid placeholder data, and gate insecure defaults behind explicit env flags.
+- [ ] **P3: Data export & deletion endpoints** – add `/api/v1/admin/export` + delete workflows with audit logging so compliance requests can be fulfilled.
+- [ ] **P4: Resource/worker safeguards** – add concurrency guards (e.g., per-workspace ingestion semaphore) and document recommended CPU/memory limits.
+- [ ] **P5: UI accessibility + React parity check** – sweep remaining Phase 6 accessibility gaps (focus states, keyboard coverage) and reconcile legacy/React shells before final review.

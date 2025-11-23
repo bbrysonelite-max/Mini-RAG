@@ -1,0 +1,143 @@
+{
+  "info": {
+    "name": "Mini-RAG Enterprise",
+    "_postman_id": "c8b4c86d-319c-4592-9b10-billing-sdk",
+    "description": "Sample requests covering ask, ingest, and billing flows.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Ask Question",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{api_key}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "query",
+              "value": "Summarize the latest onboarding changes.",
+              "type": "text"
+            },
+            {
+              "key": "k",
+              "value": "5",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ask",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ask"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Ingest URLs",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{api_key}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "urls",
+              "value": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/urls",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "urls"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Create Billing Checkout Session",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{admin_api_key}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"price_id\": \"{{stripe_price_id}}\",\n  \"success_url\": \"{{success_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/billing/checkout",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "billing", "checkout"]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "api_key",
+      "value": "replace-with-reader-key"
+    },
+    {
+      "key": "admin_api_key",
+      "value": "replace-with-admin-key"
+    },
+    {
+      "key": "stripe_price_id",
+      "value": "price_123"
+    },
+    {
+      "key": "success_url",
+      "value": "http://localhost:3000/billing/success"
+    },
+    {
+      "key": "cancel_url",
+      "value": "http://localhost:3000/billing/cancel"
+    }
+  ]
+}
+

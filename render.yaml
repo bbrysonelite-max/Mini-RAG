@@ -1,0 +1,50 @@
+# Render.com deployment configuration
+services:
+  - type: web
+    name: mini-rag
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mini-rag-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: mini-rag-redis
+          type: redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: STRIPE_API_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_ID
+        sync: false
+      - key: REDIS_ENABLED
+        value: true
+      - key: BACKGROUND_JOBS_ENABLED
+        value: true
+      - key: ALLOW_INSECURE_DEFAULTS
+        value: false
+    healthCheckPath: /health
+
+databases:
+  - name: mini-rag-db
+    databaseName: rag_brain
+    user: postgres
+    plan: starter
+
+  - name: mini-rag-redis
+    type: redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+

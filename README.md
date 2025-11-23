@@ -1,40 +1,109 @@
-# Mini-RAG: Document Retrieval and Question Answering System
+# Mini-RAG: Production-Ready RAG System
 
-[Social media links placeholder]
+> **🎉 PROJECT COMPLETE - Ready to Deploy!**  
+> **👉 See [START_HERE.md](START_HERE.md) for one-command deployment**
 
-A lightweight RAG (Retrieval-Augmented Generation) system for ingesting, searching, and querying documents, YouTube transcripts, and other text sources.
+A production-ready, multi-tenant RAG (Retrieval-Augmented Generation) system with enterprise features: OAuth authentication, Stripe billing, Redis caching, comprehensive monitoring, and full deployment automation.
 
 ## Features
 
+- **Multi-Tenant Architecture**: Organization & workspace isolation with role-based access
+- **Authentication**: Google OAuth + JWT sessions + API keys with scope enforcement
 - **Document Ingestion**: Support for PDF, DOCX, Markdown, TXT files
 - **YouTube Integration**: Automatic transcript extraction and ingestion
 - **Transcript Support**: VTT, SRT, and TXT transcript files
-- **Web UI**: Browser-based interface for document management and querying
+- **Hybrid Search**: BM25 + pgvector embeddings (OpenAI/Anthropic)
+- **Web UI**: Browser-based interface with workspace switching
 - **Document Browser**: View, search, and manage ingested documents
-- **BM25 Search**: Fast keyword-based retrieval
+- **Usage Quotas**: Per-workspace request & storage limits
+- **Billing Integration**: Stripe subscriptions with automated trial management
+- **Observability**: Prometheus metrics + OpenTelemetry traces + structured logging
 - **Answer Scoring**: Coverage, groundedness, citation, and brevity metrics
 
-## Quick Start
+## 🚀 Quick Start
 
-### Installation
+### One-Command Deploy
 
 ```bash
-# Install dependencies
-pip install fastapi uvicorn rank-bm25 pypdf docx2txt youtube-transcript-api webvtt srt
+# Local (Docker Compose)
+./scripts/one_click_deploy.sh local
 
-# Or use requirements.txt (if available)
-pip install -r requirements.txt
+# Production - Choose your platform
+./scripts/one_click_deploy.sh heroku   # Easiest
+./scripts/one_click_deploy.sh fly      # Fastest
+./scripts/one_click_deploy.sh render   # Best for teams
 ```
 
-### Running the Server
+### Manual Setup
 
 ```bash
-python server.py
-# Or use uvicorn directly
-uvicorn server:app --host 0.0.0.0 --port 8000
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Set up environment
+cp PRODUCTION_ENV_TEMPLATE .env
+# Edit .env with your credentials
+
+# 3. Start services
+docker-compose up -d
+
+# 4. Initialize database
+docker exec -i mini-rag-db psql -U postgres -d rag_brain < db_schema.sql
+
+# 5. Verify health
+curl http://localhost:8000/health
 ```
 
 Then open your browser to `http://localhost:8000/app/`
+
+### Running with Docker
+
+```bash
+# Full stack with Redis + PostgreSQL
+docker-compose up --build
+
+# Wait for health checks
+curl http://localhost:8000/health
+```
+
+This starts PostgreSQL + Redis + FastAPI app. Browse to `http://localhost:8000/app` when healthy.
+
+### Production Deployment
+
+See `LAUNCH_CHECKLIST.md` for step-by-step guide or use:
+```bash
+./scripts/one_click_deploy.sh [heroku|fly|render]
+```
+
+Full deployment takes ~15 minutes including database setup.
+
+### React Development Server
+
+A new Vite/React shell lives in `frontend-react/`. To run it:
+
+```bash
+cd frontend-react
+npm install
+npm run dev
+```
+
+The dev server proxy points to `http://localhost:8000` for API calls. Production builds are created via `npm run build`.
+
+After building, the FastAPI app will serve the React UI at `http://localhost:8000/app-react` (the legacy UI remains at `/app` until the migration is complete).
+
+### Optional: OpenTelemetry / Logging
+
+Set the following environment variables to enable tracing + structured log enrichment:
+
+```
+OTEL_ENABLED=true
+OTEL_SERVICE_NAME=mini-rag
+# optional:
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com/v1/traces
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer xyz
+```
+
+When enabled, the server emits correlation IDs (`X-Request-ID`) and OpenTelemetry traces that you can ingest into your preferred backend.
 
 ### Ingesting Documents
 
@@ -90,17 +159,37 @@ mini-rag/
 Set environment variables:
 - `CHUNKS_PATH`: Path to chunks file (default: `out/chunks.jsonl`)
 
-## Security Notes
+## Security & Production Readiness
 
-⚠️ **This is a development/prototype system. For production use, see:**
-- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Security and commercial readiness analysis
-- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Code-level security fixes
+✅ **Authentication & authorization required** for all data operations (OAuth + API keys)  
+✅ **Multi-tenant isolation** via workspace-scoped queries and storage  
+✅ **Billing enforcement** blocks ingestion when trials expire or subscriptions lapse  
+✅ **Production checklist** available in `docs/guides/QUICK_REFERENCE.md`
+
+⚠️ **Before deploying:**
+1. Replace placeholder secrets in `.env` (see `env.template`)
+2. Purge demo data from `out/chunks.jsonl`
+3. Configure real Stripe keys + webhook endpoint
+4. Set up PostgreSQL with pgvector extension
+5. Review `docker-compose.yml` secret validation
+
+For detailed security analysis:
+- `docs/guides/QUICK_REFERENCE.md` - Production checklist
+- `docs/guides/BILLING_AND_API.md` - Stripe setup & API usage
 
 ## Documentation
 
 - `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis of commercial readiness
 - `docs/guides/CRITICAL_FIXES_GUIDE.md` - Implementation guide for critical fixes
 - `docs/guides/QUICK_REFERENCE.md` - Quick checklist and reference
+- `docs/guides/BILLING_AND_API.md` - Stripe setup, billing endpoints, and Postman/SDK onboarding
+- `docs/infra/CI_SETUP.md` - CI/CD workflow overview and required secrets
+- `docs/guides/REACT_MIGRATION.md` - Plan for rolling out the new React shell alongside the legacy UI
+
+## Python SDK & Postman Collection
+
+- **SDK:** `clients/sdk.py` ships a minimal `MiniRAGClient` that wraps `/api/v1/ask`, ingest endpoints, and billing helpers. Install `httpx`, copy the file into your project, and initialize it with `base_url` + API key.
+- **Postman:** Import `docs/postman/mini-rag.postman_collection.json` to exercise ask, ingest, and billing flows with environment variables (`{{base_url}}`, `{{api_key}}`, etc.).
 
 ## License
 

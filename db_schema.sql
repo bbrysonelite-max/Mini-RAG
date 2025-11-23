@@ -41,9 +41,51 @@ CREATE TABLE IF NOT EXISTS organizations (
     plan VARCHAR(50) NOT NULL DEFAULT 'free', -- free, pro, enterprise
     quotas JSONB DEFAULT '{"users": 5, "workspaces": 3, "chunks": 50000}',
     metadata JSONB DEFAULT '{}',
+    billing_status VARCHAR(50) NOT NULL DEFAULT 'trialing', -- trialing, active, past_due, canceled
+    stripe_customer_id VARCHAR(255),
+    stripe_subscription_id VARCHAR(255),
+    trial_ends_at TIMESTAMP WITH TIME ZONE,
+    subscription_expires_at TIMESTAMP WITH TIME ZONE,
+    billing_metadata JSONB DEFAULT '{}',
+    billing_updated_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Workspace quota settings
+CREATE TABLE IF NOT EXISTS workspace_quota_settings (
+    workspace_id UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    chunk_limit BIGINT NOT NULL DEFAULT 500000,
+    request_limit_per_day BIGINT NOT NULL DEFAULT 10000,
+    request_limit_per_minute INTEGER NOT NULL DEFAULT 120,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Workspace usage counters (per day)
+CREATE TABLE IF NOT EXISTS workspace_usage_counters (
+    workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+    bucket_date DATE NOT NULL,
+    chunk_count BIGINT NOT NULL DEFAULT 0,
+    request_count BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, bucket_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_usage_date ON workspace_usage_counters(bucket_date);
+
+-- Organization billing events (webhook audit)
+CREATE TABLE IF NOT EXISTS organization_billing_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    event_id VARCHAR(255) NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_billing_events_org ON organization_billing_events(organization_id);
 
 -- User <-> Organization membership
 CREATE TABLE IF NOT EXISTS user_organizations (
@@ -212,6 +254,8 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 -- Organizations
 CREATE INDEX IF NOT EXISTS idx_organizations_slug ON organizations(slug);
 CREATE INDEX IF NOT EXISTS idx_organizations_plan ON organizations(plan);
+CREATE INDEX IF NOT EXISTS idx_organizations_billing_status ON organizations(billing_status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_stripe_customer ON organizations(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
 
 -- User organizations
 CREATE INDEX IF NOT EXISTS idx_user_org_user ON user_organizations(user_id);
