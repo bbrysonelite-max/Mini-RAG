@@ -80,24 +80,19 @@ case $PLATFORM in
     
     # Check .env exists
     if [ ! -f .env ]; then
-        echo "Creating .env from template..."
-        cp PRODUCTION_ENV_TEMPLATE .env
-        
-        # Generate SECRET_KEY
-        SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-        sed -i.bak "s/SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" .env
-        
+        echo "⚠️  .env file not found!"
         echo ""
-        echo "⚠️  Edit .env with your real credentials:"
-        echo "   - GOOGLE_CLIENT_ID"
-        echo "   - GOOGLE_CLIENT_SECRET"
-        echo "   - OPENAI_API_KEY"
-        echo "   - STRIPE_* (or skip for dev)"
+        echo "For local dev with dummy secrets:"
+        echo "  export ALLOW_INSECURE_DEFAULTS=true"
         echo ""
-        echo "For local dev, you can also set:"
-        echo "   ALLOW_INSECURE_DEFAULTS=true"
+        echo "For production-like local testing:"
+        echo "  cp PRODUCTION_ENV_TEMPLATE .env"
+        echo "  # Edit .env with real credentials"
         echo ""
-        read -p "Press Enter after editing .env..."
+        read -p "Press Enter to continue with ALLOW_INSECURE_DEFAULTS=true for demo..."
+        export ALLOW_INSECURE_DEFAULTS=true
+    else
+        echo "✓ .env file found"
     fi
     
     # Start services
@@ -110,7 +105,7 @@ case $PLATFORM in
     
     # Initialize DB
     echo "Loading schema..."
-    docker exec -i mini-rag-db psql -U postgres -d rag_brain < db_schema.sql
+    docker exec -i mini-rag-db psql -U postgres -d rag_brain < db_schema.sql 2>&1 | grep -v "already exists" || true
     
     # Start app
     echo "Starting application..."

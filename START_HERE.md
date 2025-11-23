@@ -10,14 +10,23 @@ All code complete. All docs written. All tests passing. Ready to deploy.
 
 ---
 
-## 🚀 DEPLOY IN 3 COMMANDS
+## 🚀 START IN 1 COMMAND
 
-### 1. Choose Your Platform
+### Run Locally (No Docker Required)
 ```bash
-# Local testing (Docker)
-./scripts/one_click_deploy.sh local
+./START_LOCAL.sh
+```
 
-# OR Production (pick one):
+Then open: **http://localhost:8000/app**
+
+**OR with Docker:**
+```bash
+# If Docker is running
+./scripts/one_click_deploy.sh local
+```
+
+**OR Deploy to Production:**
+```bash
 ./scripts/one_click_deploy.sh fly      # Fastest (~10 min)
 ./scripts/one_click_deploy.sh heroku   # Easiest  
 ./scripts/one_click_deploy.sh render   # Best dashboard
