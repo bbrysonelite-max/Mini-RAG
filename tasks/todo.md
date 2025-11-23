@@ -29,6 +29,7 @@
 - H5: **Code review briefing:** focus on `server.py` (auth context, session secrets, billing init), `rag_pipeline.py` (embedding loop + pgvector fallback), `billing_service.py` (Stripe workflows), and recent client/test additions (`clients/sdk.py`, `tests/test_sdk.py`, `tests/test_rag_pipeline.py`). Validate remaining Phase 6 UI work (navigation shell, ingest UX, dashboard, accessibility) before merge, and confirm operational prerequisites: purge sample chunks, inject production `SECRET_KEY`, and provide real Stripe/OpenAI credentials plus pgvector connectivity.
 - Security hardening: `config_utils.ensure_not_placeholder` now enforces non-placeholder secrets across session cookies, Stripe, and LLM providers; docs highlight the new requirement and pytest config opts into `ALLOW_INSECURE_DEFAULTS`.
 - Security headers tightened: default CSP now locks `default-src 'self'`, forbids `object-src`, denies framing, and responses emit cache-control/no-store alongside existing HSTS/XSS protections.
+- Audit logging: `_log_event` writes to `logs/audit.log`, `/api/v1/admin/audit` exposes recent entries for admins, and tests validate access + JSON output.
 - _Pending approval & execution._
 
 ---

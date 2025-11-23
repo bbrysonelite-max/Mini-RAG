@@ -12,6 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
+from collections import deque
 
 from retrieval import load_chunks, SimpleIndex, format_citation, get_unique_sources, get_chunks_by_source, delete_source_chunks
 from score import score_answer
@@ -35,7 +36,7 @@ from correlation import (
     get_workspace_id,
     set_request_context,
 )
-from logging_utils import configure_logging
+from logging_utils import configure_logging, AUDIT_LOG_PATH
 from telemetry import setup_tracing
 from telemetry import setup_tracing
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -272,6 +273,7 @@ class RequestTimer:
 
 # Setup logging & telemetry
 logger = configure_logging()
+AUDIT_LOGGER = logging.getLogger("rag.audit")
 setup_tracing(app)
 
 if LEGACY_FRONTEND_DIR.exists():
@@ -338,6 +340,8 @@ def _log_event(event: str, **fields: Any) -> None:
                 payload.setdefault("span_id", f"{span_ctx.span_id:016x}")
 
     logger.info(event, extra=payload)
+    if AUDIT_LOGGER.handlers:
+        AUDIT_LOGGER.info(event, extra=payload)
 
 
 def _quota_metrics_hook(workspace_id: str, settings: Dict[str, int], snapshot: Dict[str, int]) -> None:
@@ -2095,5 +2099,37 @@ async def admin_stats(request: Request):
     }
 api_v1.get("/admin/stats")(admin_stats)
 
+@api_v1.get("/admin/audit")
+async def list_audit_events(request: Request, limit: int = 100):
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("admin",), require=True)
+    _require_admin_context(user, api_key_principal)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
+    events = _read_audit_events(limit)
+    return {"events": events}
+
 app.include_router(api_v1)
 api_v1.get("/admin/stats")(admin_stats)
+
+def _read_audit_events(limit: int) -> List[Dict[str, Any]]:
+    if not os.path.exists(AUDIT_LOG_PATH):
+        return []
+    try:
+        limit = max(1, min(limit, 500))
+    except Exception:
+        limit = 100
+    lines: deque[str] = deque(maxlen=limit)
+    with open(AUDIT_LOG_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            entry = line.strip()
+            if entry:
+                lines.append(entry)
+    events: List[Dict[str, Any]] = []
+    for entry in lines:
+        try:
+            events.append(json.loads(entry))
+        except json.JSONDecodeError:
+            continue
+    return events

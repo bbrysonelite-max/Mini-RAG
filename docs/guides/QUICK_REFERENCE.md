@@ -34,6 +34,7 @@
 - [x] Error message sanitization (custom handlers, structured logging)
 - [x] Secret management guardrails (`SECRET_KEY`/Stripe placeholders block startup unless `ALLOW_INSECURE_DEFAULTS=true` for local dev)
 - [x] Security headers (HSTS, X-Content-Type-Options, Content-Security-Policy `default-src 'self'`, cache-control)
+- [x] Audit log export (`/api/v1/admin/audit` returns recent JSON events)
 
 ### Robustness
 - [x] Comprehensive error handling (domain-specific + fallback handlers)
