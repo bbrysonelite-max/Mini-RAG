@@ -4,6 +4,8 @@ import { AskPanel } from './components/AskPanel';
 import { IngestPanel } from './components/IngestPanel';
 import { SourcesPanel } from './components/SourcesPanel';
 import Header from './components/Header';
+import Footer from './components/Footer';
+import HelpWidget from './components/HelpWidget';
 
 type View = 'ask' | 'sources' | 'ingest' | 'admin';
 
@@ -28,6 +30,8 @@ function App() {
     <div className="app-shell">
       <Header active={view} onNavigate={setView} />
       <main>{renderView()}</main>
+      <Footer />
+      <HelpWidget position="bottom-right" />
     </div>
   );
 }

@@ -25,7 +25,7 @@ export const IngestPanel = () => {
     } catch (err) {
       setStatus((err as Error).message);
     } finally {
-      setLoading=false;
+      setLoading(false);
     }
   };
 
@@ -34,7 +34,7 @@ export const IngestPanel = () => {
       <h2>Ingest</h2>
       <textarea
         value={urls}
-        onChange={(e)=>setUrls(e.target.value)}
+        onChange={(e) => setUrls(e.target.value)}
         placeholder="Paste YouTube or transcript URLs, one per line"
       />
       <button onClick={ingest} disabled={loading}>

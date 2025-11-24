@@ -68,6 +68,7 @@ CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
 BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
 ALLOW_INSECURE_DEFAULTS = allow_insecure_defaults()
+_INLINE_CSP_WARNING_EMITTED = False
 DEFAULT_SECRET_KEY = "change-this-secret-key-in-production"
 SECRET_KEY_PLACEHOLDERS = {DEFAULT_SECRET_KEY, "changeme"}
 _METRICS_WIRED = False
@@ -118,10 +119,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        csp = os.getenv(
-            "CONTENT_SECURITY_POLICY",
-            "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+
+        allow_inline = ALLOW_INSECURE_DEFAULTS or request.url.path.startswith("/app")
+        global _INLINE_CSP_WARNING_EMITTED
+        if allow_inline and not ALLOW_INSECURE_DEFAULTS and not _INLINE_CSP_WARNING_EMITTED:
+            logger.warning(
+                "Applying relaxed CSP with 'unsafe-inline' for legacy UI at %s. "
+                "Deploy React frontend or set CONTENT_SECURITY_POLICY explicitly for stricter handling.",
+                request.url.path,
+            )
+            _INLINE_CSP_WARNING_EMITTED = True
+
+        script_policy = "script-src 'self'"
+        style_policy = "style-src 'self'"
+        if allow_inline:
+            script_policy += " 'unsafe-inline'"
+            style_policy += " 'unsafe-inline'"
+
+        default_csp = (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "connect-src 'self'; "
+            "font-src 'self'; "
+            "frame-ancestors 'none'; "
+            "img-src 'self' data:; "
+            "object-src 'none'; "
+            f"{script_policy}; "
+            f"{style_policy}"
         )
+
+        csp = os.getenv("CONTENT_SECURITY_POLICY", default_csp)
         response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -276,23 +303,42 @@ logger = configure_logging()
 AUDIT_LOGGER = logging.getLogger("rag.audit")
 setup_tracing(app)
 
-if LEGACY_FRONTEND_DIR.exists():
-    app.mount(
-        "/app",
-        StaticFiles(directory=str(LEGACY_FRONTEND_DIR), html=True),
-        name="frontend",
-    )
-else:
-    logger.warning("Legacy frontend directory not found at %s", LEGACY_FRONTEND_DIR)
-
 if REACT_FRONTEND_DIR.exists():
     app.mount(
-        "/app-react",
+        "/app",
         StaticFiles(directory=str(REACT_FRONTEND_DIR), html=True),
         name="react-frontend",
     )
+    logger.info("React frontend mounted at /app from %s", REACT_FRONTEND_DIR)
+
+    assets_dir = REACT_FRONTEND_DIR / "assets"
+    if assets_dir.exists():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(assets_dir)),
+            name="react-assets",
+        )
+        logger.info("React assets mounted at /assets from %s", assets_dir)
+    else:
+        logger.warning("React assets directory missing at %s", assets_dir)
+
+    if LEGACY_FRONTEND_DIR.exists():
+        app.mount(
+            "/app-legacy",
+            StaticFiles(directory=str(LEGACY_FRONTEND_DIR), html=True),
+            name="legacy-frontend",
+        )
+        logger.info("Legacy frontend mounted at /app-legacy from %s", LEGACY_FRONTEND_DIR)
 else:
-    logger.info("React build not found at %s; /app-react not mounted", REACT_FRONTEND_DIR)
+    logger.warning("React build not found at %s; falling back to legacy frontend", REACT_FRONTEND_DIR)
+    if LEGACY_FRONTEND_DIR.exists():
+        app.mount(
+            "/app",
+            StaticFiles(directory=str(LEGACY_FRONTEND_DIR), html=True),
+            name="legacy-frontend",
+        )
+    else:
+        logger.error("No frontend assets available; ensure either React or legacy build is present")
 
 HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
 HEALTHCHECKS_PING_FAIL_URL = os.getenv("HEALTHCHECKS_PING_FAIL_URL")
@@ -729,6 +775,9 @@ ALLOWED_EXTENSIONS = {
     '.pdf', '.docx', '.md', '.markdown', '.txt', '.vtt', '.srt',
     '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'  # Images (OCR)
 }
+BLOCKED_EXTENSIONS = {
+    '.exe', '.dll', '.bat', '.cmd', '.sh', '.msi', '.js', '.jar', '.com', '.scr', '.pkg', '.ps1', '.vbs'
+}
 UPLOAD_DIR = Path("uploads")
 
 def sanitize_filename(filename: str) -> str:
@@ -743,7 +792,9 @@ def sanitize_filename(filename: str) -> str:
 def validate_file_type(filename: str) -> bool:
     """Check if file extension is allowed."""
     ext = Path(filename).suffix.lower()
-    return ext in ALLOWED_EXTENSIONS
+    if ext in BLOCKED_EXTENSIONS:
+        return False
+    return True
 
 def generate_safe_filename(original_filename: str) -> str:
     """Generate a safe, unique filename."""
@@ -1124,7 +1175,7 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=False,  # TEMPORARY: Allow unauthenticated access for testing
+        require=True,
     )
     user_id = user.get("user_id") if user else None
 
@@ -1512,7 +1563,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("write",),
-        require=False,  # TEMPORARY: Allow unauthenticated uploads for testing
+        require=True,
     )
     user_id = user.get("user_id") if user else None
     await _require_billing_active(workspace_id)
@@ -1831,7 +1882,7 @@ async def get_sources(request: Request):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=False,
+        require=True,
     )
     user_id = user.get("user_id") if user else None
     if api_key_principal and user_id is None:
@@ -1847,7 +1898,7 @@ async def get_source_chunks(request: Request, source_id: str):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=False,
+        require=True,
     )
     user_id = user.get("user_id") if user else None
     if api_key_principal and user_id is None:
@@ -1926,7 +1977,7 @@ async def get_source_preview(request: Request, source_id: str, limit: int = 3):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=False,
+        require=True,
     )
     user_id = user.get("user_id") if user else None
     if api_key_principal and user_id is None:
@@ -1943,7 +1994,7 @@ async def search_source(request: Request, query: str, source_id: str = None, k: 
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=False,
+        require=True,
     )
     user_id = user.get("user_id") if user else None
     if api_key_principal and user_id is None:
@@ -2132,22 +2183,28 @@ async def _prepare_file_payloads(
         if upload is None or not upload.filename:
             continue
 
-        if not validate_file_type(upload.filename):
+        ext = Path(upload.filename).suffix.lower()
+        if ext in BLOCKED_EXTENSIONS:
             results.append(
                 {
                     "file": upload.filename,
-                    "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+                    "error": f"Files with the '{ext}' extension are blocked for security reasons.",
                 }
             )
             _log_event(
                 "ingest.file.skipped",
                 file=upload.filename,
-                reason="unsupported_type",
+                reason="blocked_extension",
+                extension=ext or "",
                 user_id=user_id,
                 workspace_id=workspace_id,
                 api_key=bool(api_key_principal),
             )
             _record_ingest_event("file", "skipped", 400)
+            try:
+                await upload.close()
+            except Exception:
+                pass
             continue
 
         safe_name = generate_safe_filename(upload.filename)
@@ -2207,6 +2264,7 @@ async def _prepare_file_payloads(
                 "file": upload.filename,
                 "safe_name": safe_name,
                 "content": bytes(content),
+                "extension": ext,
             }
         )
 
@@ -2233,6 +2291,7 @@ async def _ingest_files_core(
     for payload in prepared_files:
         safe_name = payload["safe_name"]
         original = payload["file"]
+        ext = payload.get("extension") or Path(original).suffix.lower()
         path = UPLOAD_DIR / safe_name
 
         try:
@@ -2305,7 +2364,14 @@ async def _ingest_files_core(
             )
 
         written_count = int(record.get("written", 0) or 0)
-        results.append({"file": original, "safe_name": safe_name, **record})
+        result_entry: Dict[str, Any] = {"file": original, "safe_name": safe_name, **record, "handler": handler}
+        if handler == "text_fallback" and not record.get("error"):
+            result_entry.setdefault("note", "Processed via text fallback for unfamiliar extension; review formatting.")
+        elif ext and ext not in ALLOWED_EXTENSIONS and not record.get("error"):
+            result_entry.setdefault("note", "Processed with best-effort conversion. This extension is not formally supported yet.")
+        if ext:
+            result_entry["extension"] = ext
+        results.append(result_entry)
         total += written_count
         status = "failed" if record.get("error") else "completed"
         _log_event(
@@ -2313,6 +2379,7 @@ async def _ingest_files_core(
             file=original,
             safe_name=safe_name,
             handler=handler,
+            extension=ext,
             written=written_count,
             language=language,
             user_id=user_id,
