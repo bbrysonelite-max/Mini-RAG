@@ -2,60 +2,75 @@
 <html>
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>RAG Desk</title>
+<title>Second Brain - RAG System</title>
 <link rel="icon" type="image/svg+xml" href="/app/favicon.svg"/>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f4f6f8;color:#111;line-height:1.6}
-.app-layout{display:flex;min-height:100vh;background:#f4f6f8}
-.sidebar{width:260px;padding:2rem 1.75rem;background:#fff;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;gap:2rem;position:sticky;top:0;max-height:100vh;box-sizing:border-box}
-.brand{font-size:1.5rem;font-weight:700;color:#111}
+/* Dark theme inspired by Manus.space design */
+:root{
+  --bg-primary:#000;
+  --bg-secondary:#1a1a1a;
+  --bg-card:#222;
+  --accent-orange:#ff6b35;
+  --accent-orange-hover:#ff8555;
+  --text-primary:#fff;
+  --text-secondary:#999;
+  --text-muted:#666;
+  --border-subtle:#333;
+  --border-glow:rgba(255,107,53,0.3);
+}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:var(--bg-primary);color:var(--text-primary);line-height:1.6}
+.app-layout{display:flex;min-height:100vh;background:var(--bg-primary)}
+.sidebar{width:260px;padding:2rem 1.75rem;background:var(--bg-secondary);border-right:1px solid var(--border-subtle);display:flex;flex-direction:column;gap:2rem;position:sticky;top:0;max-height:100vh;box-sizing:border-box}
+.brand{font-size:1.5rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:0.5rem}
+.brand::before{content:"🧠";font-size:1.8rem}
 .workspace-switcher{display:flex;flex-direction:column;gap:.5rem}
-.workspace-switcher label{font-size:.85rem;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.workspace-switcher select{padding:.55rem .75rem;border-radius:10px;border:1px solid #d0d7e2;background:#fafafa;font-size:.95rem;font-family:inherit}
-.workspace-switcher select:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.08);background:#fff}
+.workspace-switcher label{font-size:.85rem;color:var(--text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.workspace-switcher select{padding:.55rem .75rem;border-radius:10px;border:1px solid var(--border-subtle);background:var(--bg-card);color:var(--text-primary);font-size:.95rem;font-family:inherit}
+.workspace-switcher select:focus{outline:none;border-color:var(--accent-orange);box-shadow:0 0 0 2px var(--border-glow);background:var(--bg-secondary)}
 .side-nav{display:flex;flex-direction:column;gap:.35rem}
-.side-nav a{padding:.55rem .85rem;border-radius:10px;text-decoration:none;border:1px solid transparent;color:#333;font-weight:500;display:flex;align-items:center;gap:.6rem}
-.side-nav a.active{background:#111;color:#fff;border-color:#111}
-.side-nav a:not(.active):hover{border-color:#333;color:#111}
-.sidebar-footer{margin-top:auto;font-size:.8rem;color:#64748b}
+.side-nav a{padding:.55rem .85rem;border-radius:10px;text-decoration:none;border:1px solid transparent;color:var(--text-secondary);font-weight:500;display:flex;align-items:center;gap:.6rem;transition:all 0.2s}
+.side-nav a.active{background:transparent;color:var(--accent-orange);border-bottom:2px solid var(--accent-orange)}
+.side-nav a:not(.active):hover{border-color:var(--border-subtle);color:var(--text-primary)}
+.sidebar-footer{margin-top:auto;font-size:.8rem;color:var(--text-muted)}
 .app-shell{flex:1;max-width:100%;padding:2rem 3rem;box-sizing:border-box}
 .app-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
 .page-heading{display:flex;flex-direction:column;gap:.5rem}
-.page-heading h1{margin:0;font-size:1.9rem;font-weight:700;color:#111}
-.workspace-pill{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;padding:.25rem .65rem;border-radius:999px;background:#eef2ff;color:#312e81}
+.page-heading h1{margin:0;font-size:1.9rem;font-weight:700;color:var(--text-primary)}
+.workspace-pill{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;padding:.25rem .65rem;border-radius:999px;background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border-subtle)}
 .user-meta{display:flex;align-items:center;gap:.75rem}
-#breadcrumb{font-size:.9rem;color:#64748b}
+#breadcrumb{font-size:.9rem;color:var(--text-muted)}
 #breadcrumb span{margin-right:.35rem}
-#breadcrumb span::after{content:"/";margin-left:.35rem;color:#cbd5f5}
-#breadcrumb span:last-child{color:#111;font-weight:600}
+#breadcrumb span::after{content:"/";margin-left:.35rem;color:var(--text-muted)}
+#breadcrumb span:last-child{color:var(--accent-orange);font-weight:600}
 #breadcrumb span:last-child::after{content:""}
-section{display:none;background:#fff;padding:1.5rem;border-radius:16px;box-shadow:0 10px 30px rgba(15,23,42,.08);margin-bottom:1.5rem}
+section{display:none;background:var(--bg-secondary);padding:2rem;border-radius:16px;border:1px solid var(--border-subtle);margin-bottom:1.5rem}
 section.active{display:block;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-textarea,input[type=text]{width:100%;padding:.6rem;border:1px solid #ddd;border-radius:10px;font-family:inherit;font-size:inherit;box-sizing:border-box;background:#fafafa}
-textarea:focus,input[type=text]:focus{outline:none;border-color:#111;box-shadow:0 0 0 2px rgba(0,0,0,0.1);background:#fff}
-.btn{padding:.6rem 1rem;border-radius:10px;border:1px solid #333;background:#111;color:#fff;cursor:pointer;font-size:inherit;transition:all 0.2s;font-weight:500}
-.btn:hover{background:#333;transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,0.2)}
+textarea,input[type=text]{width:100%;padding:.75rem;border:1px solid var(--border-subtle);border-radius:10px;font-family:inherit;font-size:inherit;box-sizing:border-box;background:var(--bg-card);color:var(--text-primary)}
+textarea:focus,input[type=text]:focus{outline:none;border-color:var(--accent-orange);box-shadow:0 0 0 2px var(--border-glow);background:var(--bg-secondary)}
+.btn{padding:.75rem 1.25rem;border-radius:10px;border:none;background:var(--accent-orange);color:var(--text-primary);cursor:pointer;font-size:inherit;transition:all 0.2s;font-weight:600;display:inline-flex;align-items:center;gap:0.5rem}
+.btn:hover{background:var(--accent-orange-hover);transform:translateY(-1px);box-shadow:0 4px 12px rgba(255,107,53,0.4)}
 .btn:disabled{opacity:0.5;cursor:not-allowed;transform:none;box-shadow:none}
-.btn:focus-visible{outline:3px solid rgba(59,130,246,0.6);outline-offset:3px}
-a:focus-visible{outline:3px solid rgba(59,130,246,0.6);outline-offset:3px;border-radius:6px}
-pre{background:#f7f7f7;padding:1rem;border-radius:12px;white-space:pre-wrap;max-height:420px;overflow:auto;border:1px solid #eee}
-.badge{background:#eef2ff;border-radius:999px;padding:.2rem .6rem;margin-right:.4rem;font-size:0.85em;display:inline-block;color:#1e1b4b}
-.small{font-size:.9em;color:#555}
+.btn:focus-visible{outline:3px solid var(--border-glow);outline-offset:3px}
+a:focus-visible{outline:3px solid var(--border-glow);outline-offset:3px;border-radius:6px}
+pre{background:var(--bg-card);padding:1rem;border-radius:12px;white-space:pre-wrap;max-height:420px;overflow:auto;border:1px solid var(--border-subtle);color:var(--text-primary)}
+.badge{background:var(--bg-card);border-radius:999px;padding:.25rem .65rem;margin-right:.4rem;font-size:0.85em;display:inline-block;color:var(--text-secondary);border:1px solid var(--border-subtle)}
+.small{font-size:.9em;color:var(--text-secondary)}
 .row{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
-.counter{font-weight:600}
-.source-card,.chunk-card{transition:all 0.2s}
-.source-card:hover,.chunk-card:hover{box-shadow:0 4px 16px rgba(15,23,42,0.08);transform:translateY(-2px)}
-mark{background:#fef08a;padding:0 2px;border-radius:4px}
-a{color:#0d67ff;text-decoration:none}
+.counter{font-weight:600;color:var(--accent-orange)}
+.source-card,.chunk-card{transition:all 0.2s;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px}
+.source-card:hover,.chunk-card:hover{box-shadow:0 0 20px var(--border-glow);transform:translateY(-2px);border-color:var(--accent-orange)}
+.chunk-card h3{color:var(--accent-orange);margin:0;font-size:1.1em}
+mark{background:var(--accent-orange);color:var(--bg-primary);padding:2px 4px;border-radius:4px}
+a{color:var(--accent-orange);text-decoration:none}
 a:hover{text-decoration:underline}
-#toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:1rem 1.25rem;border-radius:12px;background:#111;color:#fff;box-shadow:0 10px 25px rgba(0,0,0,0.15);display:none;z-index:2000}
-#toast.error{background:#b42318}
-#toast.success{background:#0f9d58}
-.empty-state{padding:1rem;border:1px dashed #cbd5f5;border-radius:12px;background:#f8fafc;color:#475569;text-align:center}
+#toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:1rem 1.25rem;border-radius:12px;background:var(--bg-card);color:var(--text-primary);box-shadow:0 10px 25px rgba(0,0,0,0.5);display:none;z-index:2000;border:1px solid var(--accent-orange)}
+#toast.error{background:#dc2626;border-color:#dc2626}
+#toast.success{background:#10b981;border-color:#10b981}
+.empty-state{padding:2rem;border:1px dashed var(--border-subtle);border-radius:12px;background:var(--bg-card);color:var(--text-secondary);text-align:center}
 @media (max-width:992px){
   .app-layout{flex-direction:column}
-  .sidebar{position:static;width:auto;max-height:none;border-right:none;border-bottom:1px solid #e5e7eb;padding:1.5rem;gap:1.25rem}
+  .sidebar{position:static;width:auto;max-height:none;border-right:none;border-bottom:1px solid var(--border-subtle);padding:1.5rem;gap:1.25rem}
   .side-nav{flex-direction:row;flex-wrap:wrap}
   .side-nav a{flex:1;justify-content:center}
   .app-shell{padding:1.5rem}
@@ -73,8 +88,8 @@ a:hover{text-decoration:underline}
 <div class="app-layout">
   <aside class="sidebar">
     <div>
-      <div class="brand">Mini-RAG</div>
-      <p class="small" style="margin:0;color:#475569">Answer questions from your private sources.</p>
+      <div class="brand">Second Brain</div>
+      <p class="small" style="margin:0">Answer questions from your private sources.</p>
     </div>
     <div class="workspace-switcher">
       <label for="workspaceSelect">Workspace</label>
@@ -135,7 +150,7 @@ a:hover{text-decoration:underline}
     <span class="small">Current chunks: <span id="count" class="counter">–</span></span>
   </div>
   <textarea id="q" placeholder="Ask about your videos and guides..."></textarea>
-  <button id="askBtn" class="btn">Ask</button>
+  <button id="askBtn" class="btn">🚀 Ask</button>
   <h3>Answer</h3>
   <pre id="ans"></pre>
   <div id="score"></div>
@@ -158,7 +173,7 @@ a:hover{text-decoration:underline}
     <h3 style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem">
       Your Documents 
       <span class="badge" style="font-size:1em;padding:0.3rem 0.8rem" id="ingestDocCount">0</span>
-      <button id="refreshIngestDocs" class="btn" style="padding:0.4rem 0.8rem;font-size:0.85em;margin-left:auto">Refresh</button>
+      <button id="refreshIngestDocs" class="btn" style="padding:0.4rem 0.8rem;font-size:0.85em;margin-left:auto">🔄 Refresh</button>
     </h3>
     <div id="ingestDocsList"></div>
   </div>
@@ -167,7 +182,7 @@ a:hover{text-decoration:underline}
   <h4 style="margin-top:1.5rem;font-size:1rem">YouTube Videos</h4>
   <textarea id="urls" placeholder="Paste YouTube links, one per line" style="min-height:80px"></textarea>
   <div class="row">
-    <button id="ingestUrls" class="btn" type="button">Ingest URLs</button>
+    <button id="ingestUrls" class="btn" type="button">📥 Ingest URLs</button>
     <button id="retryUrlsBtn" class="btn" type="button" style="display:none;background:#0f766e">Retry failed URLs</button>
   </div>
   <div id="ingestAlerts" role="alert" style="display:none;padding:1rem;border-radius:10px;margin:1rem 0;font-weight:500"></div>
@@ -184,7 +199,7 @@ a:hover{text-decoration:underline}
     </div>
     <div id="progressText" class="small" style="margin-top:0.5rem"></div>
   </div>
-  <button id="upload" class="btn" type="button">Upload & Ingest</button>
+  <button id="upload" class="btn" type="button">⬆️ Upload & Ingest</button>
   <button id="retryFilesBtn" class="btn" type="button" style="display:none;background:#0f766e;margin-left:0.75rem">Retry failed files</button>
   <div id="statusMessage" style="display:none;padding:1rem;border-radius:8px;margin:1rem 0;font-weight:500"></div>
   <h3>Ingestion History</h3>
@@ -460,24 +475,26 @@ $("askBtn").onclick=async()=>{
         const source = chunk.source || {};
         const isExpanded = idx < 3; // First 3 expanded by default
         return `
-          <div class="chunk-card" style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem">
-            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
+          <div class="chunk-card" style="padding:1.5rem;margin-bottom:1rem">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.75rem">
               <div>
-                <strong>Chunk ${chunk.index}</strong>
-                <span class="badge" style="margin-left:0.5rem">Score: ${chunk.score.toFixed(2)}</span>
-                ${meta.start_sec !== undefined ? `<span class="badge">Time: ${Math.floor(meta.start_sec/60)}:${String(Math.floor(meta.start_sec%60)).padStart(2,'0')}</span>` : ''}
-                ${meta.chunk_index !== undefined ? `<span class="badge">Part ${meta.chunk_index + 1}/${meta.chunk_count || ''}</span>` : ''}
+                <h3 style="color:var(--accent-orange);margin:0;font-size:1.1em">Chunk ${chunk.index}</h3>
+                <div style="margin-top:0.5rem">
+                  <span class="badge">Score: ${chunk.score.toFixed(2)}</span>
+                  <span class="badge">Relevance: ${chunk.score > 0.8 ? 'High' : chunk.score > 0.5 ? 'Medium' : 'Low'}</span>
+                  <span class="badge">Type: ${source.type || 'Document'}</span>
+                  ${meta.start_sec !== undefined ? `<span class="badge">⏱️ ${Math.floor(meta.start_sec/60)}:${String(Math.floor(meta.start_sec%60)).padStart(2,'0')}</span>` : ''}
+                </div>
               </div>
-              <button class="btn" onclick="toggleChunk(${idx})" style="padding:0.4rem 0.8rem;font-size:0.9em" id="toggleBtn${idx}">
-                ${isExpanded ? 'Collapse' : 'Expand'}
+              <button onclick="toggleChunk(${idx})" style="background:transparent;border:none;color:var(--accent-orange);cursor:pointer;font-size:0.9em;padding:0.5rem 1rem;display:flex;align-items:center;gap:0.5rem" id="toggleBtn${idx}">
+                ${isExpanded ? '▲ Collapse' : '▼ Expand'}
               </button>
             </div>
-            <div class="small" style="color:#666;margin-bottom:0.5rem">
-              Source: ${source.type || 'unknown'} | 
-              <a href="${chunk.citation}" target="_blank">${chunk.citation}</a>
-            </div>
+            <p class="small" style="color:var(--text-muted);margin-bottom:0.75rem">
+              Source: <span style="color:var(--text-secondary)">${chunk.citation}</span>
+            </p>
             <div id="chunkContent${idx}" style="${isExpanded ? '' : 'display:none'}">
-              <div style="white-space:pre-wrap;background:#f7f7f7;padding:1rem;border-radius:4px;max-height:300px;overflow:auto">
+              <div style="white-space:pre-wrap;background:var(--bg-primary);padding:1.25rem;border-radius:8px;border:1px solid var(--border-subtle);max-height:300px;overflow:auto;color:var(--text-primary)">
                 ${highlightText((chunk.content || '').replace(/</g,'&lt;').replace(/>/g,'&gt;'), query)}
               </div>
             </div>
