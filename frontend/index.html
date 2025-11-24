@@ -154,16 +154,25 @@ a:hover{text-decoration:underline}
 </section>
 
 <section id="ingest">
-  <h3>Ingest URLs</h3>
-  <textarea id="urls" placeholder="Paste YouTube links, one per line"></textarea>
+  <div style="margin-bottom:2rem">
+    <h3 style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem">
+      Your Documents 
+      <span class="badge" style="font-size:1em;padding:0.3rem 0.8rem" id="ingestDocCount">0</span>
+      <button id="refreshIngestDocs" class="btn" style="padding:0.4rem 0.8rem;font-size:0.85em;margin-left:auto">Refresh</button>
+    </h3>
+    <div id="ingestDocsList"></div>
+  </div>
+
+  <h3>Add More Documents</h3>
+  <h4 style="margin-top:1.5rem;font-size:1rem">YouTube Videos</h4>
+  <textarea id="urls" placeholder="Paste YouTube links, one per line" style="min-height:80px"></textarea>
   <div class="row">
     <button id="ingestUrls" class="btn" type="button">Ingest URLs</button>
     <button id="retryUrlsBtn" class="btn" type="button" style="display:none;background:#0f766e">Retry failed URLs</button>
-    <button id="dedupe" class="btn" type="button">Dedupe</button>
-    <button id="rebuild" class="btn" type="button">Rebuild Index</button>
   </div>
   <div id="ingestAlerts" role="alert" style="display:none;padding:1rem;border-radius:10px;margin:1rem 0;font-weight:500"></div>
-  <h3>Upload files (.vtt .srt .txt .pdf .docx .md)</h3>
+  
+  <h4 style="margin-top:1.5rem;font-size:1rem">Upload ANY File (PDF, Word, Images, Text - we'll handle it!)</h4>
   <div id="dropZone" style="border:2px dashed #ccc;border-radius:8px;padding:2rem;text-align:center;margin:1rem 0;cursor:pointer;background:#fafafa">
     <p>Drag and drop files here or click to select</p>
     <input id="files" type="file" multiple style="display:none"/>
@@ -805,6 +814,12 @@ $("upload").onclick=async()=>{
       uploadProgress.style.display = "none";
       progressBar.style.width = "0%";
     }, 5000);
+    
+    // Auto-refresh document list after successful upload
+    setTimeout(() => {
+      loadIngestDocs();
+      refreshStatsCard();
+    }, 1000);
   }catch(e){
     progressText.textContent = `Error: ${e.message}`;
     log.textContent = `Error: ${e.message}`;
@@ -851,6 +866,75 @@ async function loadSources(){
   }catch(e){
     $("sourcesList").innerHTML=`<p style="color:red">Error loading sources: ${e.message}</p>`;
   }
+}
+
+// Ingest tab document list (same data, different view)
+async function loadIngestDocs(){
+  try{
+    const r=await fetch("/api/v1/sources"); const d=await r.json();
+    const sources = d.sources || [];
+    
+    if($("ingestDocCount")) $("ingestDocCount").textContent = sources.length;
+    
+    if(sources.length === 0){
+      $("ingestDocsList").innerHTML = `
+        <div class="empty-state" style="padding:2rem;text-align:center">
+          <p style="font-size:1.1em;margin-bottom:0.5rem">📄 No documents yet</p>
+          <p class="small">Drop files below to get started!</p>
+        </div>`;
+      return;
+    }
+    
+    $("ingestDocsList").innerHTML = sources.map(s => `
+      <div class="source-card" style="border:1px solid #e5e7eb;border-radius:12px;padding:1.25rem;margin-bottom:1rem;background:#fafbfc">
+        <div style="display:flex;justify-content:space-between;align-items:start">
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+              <strong style="font-size:1.05em">${s.display_name || s.path || 'Unknown'}</strong>
+              <span class="badge" style="background:#10b981;color:white;font-weight:600">✓ Ready</span>
+            </div>
+            <div class="small" style="color:#64748b;margin-bottom:0.75rem">
+              <span class="badge">${s.type}</span>
+              <span class="badge">${s.chunk_count} chunks</span>
+              ${s.language ? `<span class="badge">${s.language}</span>` : ''}
+              ${s.first_seen ? `<span style="margin-left:0.5rem">Added ${new Date(s.first_seen).toLocaleString()}</span>` : ''}
+            </div>
+            ${s.path ? `<div class="small" style="color:#94a3b8;margin-top:0.25rem">📁 ${s.path}</div>` : ''}
+            ${s.url ? `<div class="small" style="color:#94a3b8;margin-top:0.25rem">🔗 <a href="${s.url}" target="_blank">${s.url}</a></div>` : ''}
+          </div>
+          <div style="display:flex;gap:0.5rem;flex-shrink:0">
+            <button class="btn" onclick="viewSource('${s.id}')" style="padding:0.5rem 1rem;font-size:0.9em">View Chunks</button>
+            <button class="btn" onclick="deleteDocFromIngest('${s.id}', '${(s.display_name || s.path || 'this document').replace(/'/g, "\\'")}')" 
+                    style="padding:0.5rem 1rem;font-size:0.9em;background:#ef4444;border-color:#dc2626">Delete</button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }catch(e){
+    $("ingestDocsList").innerHTML=`<p style="color:red">Error loading documents: ${e.message}</p>`;
+  }
+}
+
+async function deleteDocFromIngest(sourceId, docName){
+  if(!confirm(`Delete "${docName}" and all its chunks?\n\nThis cannot be undone.`)) return;
+  
+  try{
+    const r=await fetch(`/api/v1/sources/${sourceId}`,{method:'DELETE'});
+    if(!r.ok) throw new Error(`Delete failed: ${r.status}`);
+    
+    const d=await r.json();
+    showToast(`✓ Deleted "${docName}"`, 'success');
+    
+    // Refresh both lists
+    await loadIngestDocs();
+    if(countEl) countEl.textContent = d.kept || 0;
+  }catch(e){
+    showToast(`Failed to delete: ${e.message}`, 'error');
+  }
+}
+
+if($("refreshIngestDocs")){
+  $("refreshIngestDocs").onclick = loadIngestDocs;
 }
 function renderSources(){
   const filter = ($("sourceFilter")?.value || "").toLowerCase();
@@ -1032,13 +1116,14 @@ if(window.location.search.includes("error=auth_failed")){
   window.history.replaceState({}, document.title, window.location.pathname);
 }
 
-// Load stats on page load
+// Load stats and documents on page load
 (async()=>{
   setupAuthHandlers();
   await checkAuth();
   await refreshStatsCard();
   await refreshBillingStatus();
   refreshLastIngestCard();
+  await loadIngestDocs();  // Load document list
   try{
     const r=await fetch("/api/v1/stats"); const d=await r.json();
     if(countEl) countEl.textContent = d.count || 0;

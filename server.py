@@ -725,7 +725,10 @@ class BillingPortalRequest(BaseModel):
 
 # Security configuration
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
-ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.md', '.markdown', '.txt', '.vtt', '.srt'}
+ALLOWED_EXTENSIONS = {
+    '.pdf', '.docx', '.md', '.markdown', '.txt', '.vtt', '.srt',
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'  # Images (OCR)
+}
 UPLOAD_DIR = Path("uploads")
 
 def sanitize_filename(filename: str) -> str:
@@ -2260,7 +2263,7 @@ async def _ingest_files_core(
                 "ingest_file",
                 {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
             ):
-                if lower.endswith((".vtt", ".srt", ".txt")):
+                if lower.endswith((".vtt", ".srt")):
                     handler = "transcript"
                     record = ingest_transcript(
                         str(path),
@@ -2269,7 +2272,9 @@ async def _ingest_files_core(
                         user_id=user_id,
                         workspace_id=workspace_id,
                     )
-                elif lower.endswith((".pdf", ".docx", ".md", ".markdown")):
+                elif lower.endswith((".pdf", ".docx", ".md", ".markdown", ".txt",
+                                      ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp")):
+                    # Handle all documents and images through ingest_docs (now supports images)
                     handler = "docs"
                     record = ingest_docs(
                         str(path),
@@ -2279,7 +2284,15 @@ async def _ingest_files_core(
                         workspace_id=workspace_id,
                     )
                 else:
-                    record = {"error": "unsupported file type"}
+                    # Try to ingest as text anyway (last resort)
+                    handler = "text_fallback"
+                    record = ingest_docs(
+                        str(path),
+                        out_jsonl=CHUNKS_PATH,
+                        language=language,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    )
         except Exception as exc:
             record = {"error": str(exc)}
             processing_outcome = "failure"

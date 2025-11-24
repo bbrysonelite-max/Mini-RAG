@@ -187,10 +187,41 @@ def read_docx(path: str) -> str:
     import docx2txt
     return docx2txt.process(path) or ""
 
+def read_image(path: str) -> str:
+    """Extract text from image using OCR."""
+    try:
+        import pytesseract
+        from PIL import Image
+        
+        image = Image.open(path)
+        text = pytesseract.image_to_string(image)
+        
+        if not text or len(text.strip()) < 10:
+            # If OCR produces nothing, return a description
+            return f"Image file: {os.path.basename(path)} (no text detected via OCR)"
+        
+        return text
+    except ImportError:
+        # Tesseract not installed - return placeholder
+        return f"Image file: {os.path.basename(path)} (OCR not available - install pytesseract and tesseract)"
+    except Exception as e:
+        return f"Image file: {os.path.basename(path)} (OCR failed: {str(e)})"
+
 @lru_cache(maxsize=128)
 def read_text(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+    """Read text file with multiple encoding attempts."""
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+    
+    for encoding in encodings:
+        try:
+            with open(path, "r", encoding=encoding) as f:
+                return f.read()
+        except (UnicodeDecodeError, LookupError):
+            continue
+    
+    # Last resort: binary read and decode with errors ignored
+    with open(path, "rb") as f:
+        return f.read().decode('utf-8', errors='ignore')
 
 def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=None, workspace_id=None):
     ext = os.path.splitext(path)[1].lower()
@@ -198,7 +229,10 @@ def ingest_docs(path: str, out_jsonl="out/chunks.jsonl", language="en", user_id=
         text = read_pdf(path)
     elif ext == ".docx":
         text = read_docx(path)
+    elif ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}:
+        text = read_image(path)
     else:
+        # Treat everything else as text (markdown, txt, etc.)
         text = read_text(path)
     chunks = chunk_by_chars(text, 1200, 150)
     rows, total = [], len(chunks)
