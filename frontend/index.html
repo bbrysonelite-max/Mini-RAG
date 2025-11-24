@@ -440,11 +440,9 @@ $("askBtn").onclick=async()=>{
   const query = q.value||"";
   if(!query.trim()){alert("Enter a question first"); return;}
   const f=new FormData(); f.append("query", query); f.append("k","8");
-  ans.textContent = "";
+  ans.textContent = "Searching...";
   score.innerHTML = "";
   $("chunksSection").style.display = "none";
-  const status=$("askStatus");
-  status.style.display="block";
   $("askBtn").disabled=true;
   $("askBtn").textContent="Searching…";
   try{
@@ -1135,4 +1133,4 @@ if(window.location.search.includes("error=auth_failed")){
 })();
 </script>
 </body>
-</html>
+</html><!-- Cache buster: v1763956023 -->
