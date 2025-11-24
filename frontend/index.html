@@ -856,8 +856,47 @@ mic.onclick=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognit
   if(!on){rec.start(); on=true; mic.textContent='🛑 Stop listening';} else {rec.stop();}
 };
 
-// Browser functionality
+// Browser functionality - declare variables and functions together
 let allSources = [];
+
+function renderSources(){
+  const filter = ($("sourceFilter")?.value || "").toLowerCase();
+  const filtered = allSources.filter(s => 
+    !filter || 
+    (s.display_name || "").toLowerCase().includes(filter) ||
+    (s.type || "").toLowerCase().includes(filter) ||
+    (s.path || "").toLowerCase().includes(filter) ||
+    (s.url || "").toLowerCase().includes(filter)
+  );
+  if(filtered.length === 0){
+    $("sourcesList").innerHTML = `<div class="empty-state">No sources found${filter ? ' matching filter' : ''}.</div>`;
+    return;
+  }
+  $("sourcesList").innerHTML = filtered.map(s => `
+    <div class="source-card" style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
+        <div style="flex:1">
+          <strong>${s.display_name || 'Unknown'}</strong>
+          <div class="small" style="margin-top:0.25rem">
+            <span class="badge">${s.type}</span>
+            <span class="badge">${s.chunk_count} chunks</span>
+            ${s.language ? `<span class="badge">${s.language}</span>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem">
+          <button class="btn" onclick="viewSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em">View</button>
+          <button class="btn" onclick="deleteSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em;background:#c33">Delete</button>
+        </div>
+      </div>
+      <div class="small" style="color:#666">
+        ${s.path ? `Path: ${s.path}<br>` : ''}
+        ${s.url ? `URL: <a href="${s.url}" target="_blank">${s.url}</a><br>` : ''}
+        ${s.first_seen ? `Added: ${new Date(s.first_seen).toLocaleString()}` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
 async function loadSources(){
   try{
     const r=await fetch("/api/v1/sources"); const d=await r.json();
@@ -936,45 +975,10 @@ async function deleteDocFromIngest(sourceId, docName){
 if($("refreshIngestDocs")){
   $("refreshIngestDocs").onclick = loadIngestDocs;
 }
-function renderSources(){
-  const filter = ($("sourceFilter")?.value || "").toLowerCase();
-  const filtered = allSources.filter(s => 
-    !filter || 
-    (s.display_name || "").toLowerCase().includes(filter) ||
-    (s.type || "").toLowerCase().includes(filter) ||
-    (s.path || "").toLowerCase().includes(filter) ||
-    (s.url || "").toLowerCase().includes(filter)
-  );
-  if(filtered.length === 0){
-    $("sourcesList").innerHTML = `<div class="empty-state">No sources found${filter ? ' matching filter' : ''}.</div>`;
-    return;
-  }
-  $("sourcesList").innerHTML = filtered.map(s => `
-    <div class="source-card" style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem">
-      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:0.5rem">
-        <div style="flex:1">
-          <strong>${s.display_name || 'Unknown'}</strong>
-          <div class="small" style="margin-top:0.25rem">
-            <span class="badge">${s.type}</span>
-            <span class="badge">${s.chunk_count} chunks</span>
-            ${s.language ? `<span class="badge">${s.language}</span>` : ''}
-          </div>
-        </div>
-        <div style="display:flex;gap:0.5rem">
-          <button class="btn" onclick="viewSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em">View</button>
-          <button class="btn" onclick="deleteSource('${s.id}')" style="padding:0.4rem 0.8rem;font-size:0.9em;background:#c33">Delete</button>
-        </div>
-      </div>
-      <div class="small" style="color:#666">
-        ${s.path ? `Path: ${s.path}<br>` : ''}
-        ${s.url ? `URL: <a href="${s.url}" target="_blank">${s.url}</a><br>` : ''}
-        ${s.first_seen ? `Added: ${new Date(s.first_seen).toLocaleString()}` : ''}
-      </div>
-    </div>
-  `).join('');
-}
-$("sourceFilter").oninput = renderSources;
-$("refreshSources").onclick = loadSources;
+
+// Wire up source browser handlers
+if($("sourceFilter")) $("sourceFilter").oninput = renderSources;
+if($("refreshSources")) $("refreshSources").onclick = loadSources;
 async function viewSource(id){
   try{
     const r=await fetch(`/api/v1/sources/${id}/chunks`); const d=await r.json();
