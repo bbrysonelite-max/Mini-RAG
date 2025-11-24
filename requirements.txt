@@ -32,7 +32,8 @@ opentelemetry-instrumentation-logging>=0.46b0
 # Optional: Redis for caching (install if REDIS_ENABLED=true)
 redis>=5.0.0
 
-# Image OCR (for PNG, JPG, etc.)
+# Image OCR (for PNG, JPG, etc. and image-based PDFs)
 pytesseract>=0.3.10
 Pillow>=10.0.0
+pdf2image>=1.16.0
 

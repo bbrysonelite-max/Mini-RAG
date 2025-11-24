@@ -173,15 +173,51 @@ def ingest_transcript(path: str, out_jsonl="out/chunks.jsonl", language="en", us
 
 # --- Document ingestion (pdf/docx/md/txt) ---
 def read_pdf(path: str) -> str:
+    """Extract text from PDF, with fallback to OCR for image-based PDFs."""
     from pypdf import PdfReader
     texts = []
     reader = PdfReader(path)
-    for page in reader.pages:
+    
+    for page_num, page in enumerate(reader.pages):
         try:
-            texts.append(page.extract_text() or "")
+            page_text = page.extract_text() or ""
+            texts.append(page_text)
         except (ValueError, AttributeError, KeyError):
             continue
-    return "\n".join(texts)
+    
+    full_text = "\n".join(texts)
+    
+    # If we got very little text, this might be an image-based PDF
+    # For now, return what we have with a helpful note
+    if len(full_text.strip()) < 100:
+        # Try basic OCR if dependencies available
+        try:
+            import pdf2image
+            import pytesseract
+            
+            # This requires poppler-utils (brew install poppler on macOS)
+            images = pdf2image.convert_from_path(path)
+            ocr_texts = []
+            
+            for i, image in enumerate(images[:10]):  # Limit to 10 pages for performance
+                try:
+                    page_text = pytesseract.image_to_string(image)
+                    if page_text.strip():
+                        ocr_texts.append(page_text)
+                except Exception:
+                    continue
+            
+            if ocr_texts:
+                return "\n\n".join(ocr_texts)
+        except Exception:
+            # OCR not available - return placeholder that can still be searched
+            pass
+        
+        # Return a searchable placeholder
+        filename = os.path.basename(path)
+        return f"{filename}\n\nThis is an image-based PDF. Text content: [Limited text extraction - {len(full_text)} characters extracted]\n\n{full_text}\n\nNote: For better OCR support, install: brew install poppler tesseract"
+    
+    return full_text
 
 def read_docx(path: str) -> str:
     import docx2txt
