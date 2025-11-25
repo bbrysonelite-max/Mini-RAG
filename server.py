@@ -879,7 +879,7 @@ async def startup_event():
     asyncio.create_task(_warm_and_measure())
 
     if INDEX is None or not CHUNKS:
-        ensure_index()
+        ensure_index(require=False)  # Don't crash on startup if no documents yet
 
     if BACKGROUND_JOBS_ENABLED:
         BACKGROUND_QUEUE = BackgroundTaskQueue()
@@ -954,25 +954,50 @@ def require_admin(user: Optional[Dict[str, Any]], api_key: Optional[APIKeyPrinci
             detail="Admin privileges required."
         )
 
-def ensure_index():
+def ensure_index(require: bool = True):
+    """Load or build the search index.
+    
+    Args:
+        require: If True, raise IndexNotFoundError when no chunks exist.
+                 If False, gracefully handle empty state (for startup).
+    """
     global INDEX, CHUNKS
     if INDEX is None:
         if not os.path.exists(CHUNKS_PATH):
-            logger.error(f"Index not found at {CHUNKS_PATH}")
-            raise IndexNotFoundError("Index not found. Please ingest documents first.")
+            if require:
+                logger.error(f"Index not found at {CHUNKS_PATH}")
+                raise IndexNotFoundError("Index not found. Please ingest documents first.")
+            else:
+                logger.warning(f"No chunks file at {CHUNKS_PATH} - starting with empty index")
+                CHUNKS = []
+                INDEX = SimpleIndex([])
+                return
         try:
             CHUNKS = load_chunks(CHUNKS_PATH)
         except Exception as e:
             logger.error(f"Failed to load chunks: {e}", exc_info=True)
-            raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
+            if require:
+                raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
+            else:
+                CHUNKS = []
+                INDEX = SimpleIndex([])
+                return
         if not CHUNKS:
-            raise IndexNotFoundError("Index is empty. Please ingest documents first.")
+            if require:
+                raise IndexNotFoundError("Index is empty. Please ingest documents first.")
+            else:
+                logger.warning("Chunks file is empty - starting with empty index")
+                INDEX = SimpleIndex([])
+                return
         try:
             INDEX = SimpleIndex(CHUNKS)
             logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
         except Exception as e:
             logger.error(f"Failed to build index: {e}", exc_info=True)
-            raise IndexNotFoundError("Failed to build search index.")
+            if require:
+                raise IndexNotFoundError("Failed to build search index.")
+            else:
+                INDEX = SimpleIndex([])
 
 @app.get("/")
 def root(): return HTMLResponse('<meta http-equiv="refresh" content="0; url=/app/">')
