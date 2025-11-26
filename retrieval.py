@@ -17,11 +17,16 @@ def load_chunks(path):
     return items
 class SimpleIndex:
     def __init__(self,chunks):
-        self.chunks=chunks
-        docs=[c.get("content","") for c in chunks]
+        self.chunks=chunks if chunks else []
+        if not self.chunks:
+            self.bm25 = None
+            return
+        docs=[c.get("content","") for c in self.chunks]
         toks=[_tok(d) for d in docs]
         self.bm25=BM25Okapi(toks)
     def search(self,query,k=8,user_id=None,workspace_id=None):
+        if not self.chunks or self.bm25 is None:
+            return []
         q=_tok(query or "")
         scores=self.bm25.get_scores(q)
         ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
