@@ -68,6 +68,8 @@ CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
 BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
 ALLOW_INSECURE_DEFAULTS = allow_insecure_defaults()
+# LOCAL_MODE: Skip authentication for local development/testing
+LOCAL_MODE = os.getenv("LOCAL_MODE", "false").lower() in {"1", "true", "yes"}
 _INLINE_CSP_WARNING_EMITTED = False
 DEFAULT_SECRET_KEY = "change-this-secret-key-in-production"
 SECRET_KEY_PLACEHOLDERS = {DEFAULT_SECRET_KEY, "changeme"}
@@ -516,10 +518,20 @@ async def _resolve_auth_context(
 
     user = get_current_user(request)
     if require and not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Supply an API key or sign in via Google OAuth.",
-        )
+        # LOCAL_MODE bypass: allow unauthenticated access for development
+        if LOCAL_MODE:
+            user = {
+                "user_id": "local-dev-user",
+                "email": "local@localhost",
+                "name": "Local Developer",
+                "role": "admin",
+            }
+            logger.info("LOCAL_MODE: Using default local user for unauthenticated request")
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required. Supply an API key or sign in via Google OAuth.",
+            )
     workspace_id = await _get_primary_workspace_id_for_user(user)
     organization_id = await _get_organization_id_for_workspace(workspace_id)
     set_request_context(
@@ -583,6 +595,9 @@ async def _count_workspace_chunks(workspace_id: Optional[str]) -> Optional[int]:
 
 async def _require_billing_active(workspace_id: Optional[str]) -> None:
     """Block ingestion when billing is inactive for the associated organization."""
+    # LOCAL_MODE bypass: skip billing check for development
+    if LOCAL_MODE:
+        return
     if not workspace_id or DB is None:
         return
     row = await DB.fetch_one(
