@@ -27,6 +27,16 @@ from background_queue import BackgroundTaskQueue
 from quota_service import QuotaService, QuotaExceededError
 from billing_service import BillingService, BillingServiceError
 
+# Model service for embeddings and generation
+try:
+    from model_service_impl import ConcreteModelService
+    MODEL_SERVICE_AVAILABLE = True
+except ImportError as e:
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning(f"ModelService not available: {e}")
+    MODEL_SERVICE_AVAILABLE = False
+    ConcreteModelService = None
+
 from correlation import (
     CorrelationIdMiddleware,
     build_observability_headers,
@@ -877,6 +887,7 @@ API_KEY_SERVICE: Optional[ApiKeyService] = None
 QUOTA_SERVICE: Optional[QuotaService] = None
 BILLING_SERVICE: Optional[BillingService] = None
 VECTOR_STORE_INSTANCE: Optional["VectorStore"] = None
+MODEL_SERVICE: Optional["ConcreteModelService"] = None
 
 STRIPE_API_KEY = ensure_not_placeholder(
     "STRIPE_API_KEY",
@@ -903,7 +914,7 @@ STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "http://localho
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection on startup (if configured)."""
-    global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE
+    global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE, MODEL_SERVICE
     
     # Try to initialize database if connection string is provided
     db_url = os.environ.get("DATABASE_URL")
@@ -945,6 +956,18 @@ async def startup_event():
         configure_api_key_auth(None)
         QUOTA_SERVICE = None
         BILLING_SERVICE = None
+    
+    # Initialize ModelService for embeddings and generation
+    if MODEL_SERVICE_AVAILABLE:
+        try:
+            MODEL_SERVICE = ConcreteModelService()
+            logger.info("ModelService initialized (embeddings + generation available)")
+        except Exception as exc:
+            logger.warning("ModelService initialization failed: %s", exc)
+            MODEL_SERVICE = None
+    else:
+        MODEL_SERVICE = None
+    
     asyncio.create_task(_warm_and_measure())
 
     if INDEX is None or not CHUNKS:
@@ -1340,7 +1363,70 @@ def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optio
     ensure_index()
     # Filter by user_id for data isolation
     user_id = user.get('user_id') if user else None
-    ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
+    
+    # Hybrid search: BM25 + Vector (if MODEL_SERVICE available)
+    if MODEL_SERVICE and len(CHUNKS) > 0:
+        try:
+            # Get query embedding
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            embed_result = loop.run_until_complete(MODEL_SERVICE.embed({
+                "texts": [query],
+                "modelId": "text-embedding-3-small"
+            }))
+            loop.close()
+            
+            query_embedding = embed_result["vectors"][0] if embed_result.get("vectors") else None
+            
+            if query_embedding:
+                # BM25 results
+                bm25_ranked = INDEX.search(query, k=k*2, user_id=user_id, workspace_id=workspace_id)
+                
+                # Vector similarity results (cosine similarity)
+                import numpy as np
+                vector_scores = []
+                for idx, chunk in enumerate(CHUNKS):
+                    # Skip if not matching user/workspace
+                    if user_id and chunk.get("user_id") and chunk.get("user_id") != user_id:
+                        continue
+                    if workspace_id and chunk.get("workspace_id") and chunk.get("workspace_id") != workspace_id:
+                        continue
+                    
+                    # Get stored embedding (if exists) or skip
+                    chunk_embedding = chunk.get("embedding")
+                    if chunk_embedding and len(chunk_embedding) == len(query_embedding):
+                        # Cosine similarity
+                        dot_product = np.dot(query_embedding, chunk_embedding)
+                        norm_a = np.linalg.norm(query_embedding)
+                        norm_b = np.linalg.norm(chunk_embedding)
+                        similarity = dot_product / (norm_a * norm_b) if (norm_a * norm_b) > 0 else 0
+                        vector_scores.append((idx, similarity))
+                
+                # Combine and re-rank
+                vector_scores.sort(key=lambda x: x[1], reverse=True)
+                vector_top = vector_scores[:k*2]
+                
+                # Merge BM25 and vector results (reciprocal rank fusion)
+                combined_scores = {}
+                for rank, (idx, score) in enumerate(bm25_ranked):
+                    combined_scores[idx] = combined_scores.get(idx, 0) + (1.0 / (rank + 60))
+                for rank, (idx, score) in enumerate(vector_top):
+                    combined_scores[idx] = combined_scores.get(idx, 0) + (1.0 / (rank + 60))
+                
+                ranked = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+                logger.info(f"Hybrid search: {len(bm25_ranked)} BM25 + {len(vector_top)} vector → {len(ranked)} results")
+            else:
+                # Fallback to BM25 only
+                ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
+                logger.warning("Vector embedding failed, using BM25 only")
+        except Exception as e:
+            logger.warning(f"Hybrid search failed: {e}, falling back to BM25")
+            ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
+    else:
+        # BM25 only (no MODEL_SERVICE or no chunks)
+        ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
+    
     top = [CHUNKS[i] for i,_ in ranked]
     snippets = [c.get("content","").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]
@@ -2177,6 +2263,90 @@ async def rebuild_index(request: Request):
 
     return await _run_rebuild()
 api_v1.post("/rebuild")(rebuild_index)
+
+@app.post("/api/generate_embeddings")
+@app.post("/generate_embeddings")
+async def generate_embeddings(request: Request, batch_size: int = 50):
+    """Generate embeddings for all chunks that don't have them."""
+    _, workspace_id, _ = await _resolve_auth_context(request, scopes=("write",), require=True)
+    
+    if not MODEL_SERVICE:
+        raise HTTPException(status_code=503, detail="ModelService not available")
+    
+    ensure_index()
+    
+    # Find chunks without embeddings
+    chunks_without_embeddings = [
+        (idx, chunk) for idx, chunk in enumerate(CHUNKS)
+        if not chunk.get("embedding")
+    ]
+    
+    if not chunks_without_embeddings:
+        return {"status": "complete", "embedded": 0, "message": "All chunks already have embeddings"}
+    
+    async def _generate_embeddings_job():
+        embedded_count = 0
+        batch = []
+        batch_indices = []
+        
+        for idx, chunk in chunks_without_embeddings:
+            batch.append(chunk.get("content", ""))
+            batch_indices.append(idx)
+            
+            if len(batch) >= batch_size:
+                try:
+                    result = await MODEL_SERVICE.embed({
+                        "texts": batch,
+                        "modelId": "text-embedding-3-small"
+                    })
+                    vectors = result.get("vectors", [])
+                    
+                    # Store embeddings in chunks
+                    for i, vector in enumerate(vectors):
+                        if i < len(batch_indices):
+                            CHUNKS[batch_indices[i]]["embedding"] = vector
+                            embedded_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Failed to generate batch embeddings: {e}")
+                
+                batch = []
+                batch_indices = []
+        
+        # Process remaining batch
+        if batch:
+            try:
+                result = await MODEL_SERVICE.embed({
+                    "texts": batch,
+                    "modelId": "text-embedding-3-small"
+                })
+                vectors = result.get("vectors", [])
+                
+                for i, vector in enumerate(vectors):
+                    if i < len(batch_indices):
+                        CHUNKS[batch_indices[i]]["embedding"] = vector
+                        embedded_count += 1
+            except Exception as e:
+                logger.error(f"Failed to generate final batch embeddings: {e}")
+        
+        # Save chunks with embeddings
+        from raglite import write_jsonl
+        write_jsonl(CHUNKS_PATH, CHUNKS)
+        
+        return {"status": "complete", "embedded": embedded_count, "total": len(chunks_without_embeddings)}
+    
+    if BACKGROUND_JOBS_ENABLED and BACKGROUND_QUEUE:
+        job = BACKGROUND_QUEUE.submit(
+            "generate_embeddings",
+            _generate_embeddings_job,
+            metadata={"workspace_id": workspace_id, "chunk_count": len(chunks_without_embeddings)},
+        )
+        return {"job_id": job.id, "queued": True, "status": "queued", "chunks_to_embed": len(chunks_without_embeddings)}
+    
+    result = await _generate_embeddings_job()
+    return result
+
+api_v1.post("/generate_embeddings")(generate_embeddings)
 
 # Admin-only endpoints
 @app.get("/api/admin/users")

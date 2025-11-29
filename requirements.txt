@@ -15,6 +15,7 @@ python-dotenv>=1.0.0
 # Database & Vector Store (pgvector)
 psycopg[binary]>=3.1.0
 psycopg-pool>=3.1.0
+numpy>=1.24.0
 
 # LLM Providers
 openai>=1.0.0
