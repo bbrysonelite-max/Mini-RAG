@@ -243,6 +243,7 @@ let activeSection="ask";
 let modalCleanup=null;
 let failedUrls=[];
 let failedFiles=[];
+let allSources = []; // Declare early to avoid temporal dead zone error
 
 const breadcrumbMap={
   ask:["Home","Ask"],
@@ -871,9 +872,7 @@ mic.onclick=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognit
   if(!on){rec.start(); on=true; mic.textContent='🛑 Stop listening';} else {rec.stop();}
 };
 
-// Browser functionality - declare variables and functions together
-let allSources = [];
-
+// Browser functionality
 function renderSources(){
   const filter = ($("sourceFilter")?.value || "").toLowerCase();
   const filtered = allSources.filter(s => 
