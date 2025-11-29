@@ -48,10 +48,19 @@ from correlation import (
 )
 from logging_utils import configure_logging, AUDIT_LOG_PATH
 from telemetry import setup_tracing
-from telemetry import setup_tracing
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
 import httpx
+
+# Sentry error tracking
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+    SENTRY_AVAILABLE = True
+except ImportError:
+    SENTRY_AVAILABLE = False
+    sentry_sdk = None
 
 try:
     from opentelemetry import trace
@@ -367,6 +376,25 @@ class RequestTimer:
 logger = configure_logging()
 AUDIT_LOGGER = logging.getLogger("rag.audit")
 setup_tracing(app)
+
+# Initialize Sentry if configured
+if SENTRY_AVAILABLE:
+    sentry_dsn = os.getenv("SENTRY_DSN")
+    if sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+            profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
+            integrations=[
+                FastApiIntegration(),
+                StarletteIntegration(),
+            ],
+            before_send=lambda event, hint: event if not LOCAL_MODE else None,
+        )
+        logger.info("Sentry error tracking initialized")
+    else:
+        logger.info("SENTRY_DSN not set - error tracking disabled")
 
 if REACT_FRONTEND_DIR.exists():
     app.mount(

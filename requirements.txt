@@ -30,6 +30,9 @@ opentelemetry-exporter-otlp>=1.25.0
 opentelemetry-instrumentation-fastapi>=0.46b0
 opentelemetry-instrumentation-logging>=0.46b0
 
+# Error tracking
+sentry-sdk[fastapi]>=1.40.0
+
 # Optional: Redis for caching (install if REDIS_ENABLED=true)
 redis>=5.0.0
 
