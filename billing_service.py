@@ -9,6 +9,7 @@ import stripe
 
 from correlation import get_request_id
 from database import Database
+from config_utils import allow_insecure_defaults
 
 logger = logging.getLogger("rag.billing")
 
@@ -173,15 +174,24 @@ class BillingService:
         )
 
     async def _fetch_org(self, organization_id: str) -> Dict[str, Any]:
-        row = await self.db.fetch_one(
-            """
-            SELECT id, name, stripe_customer_id
-            FROM organizations
-            WHERE id = $1
-            """,
-            (organization_id,),
-        )
+        try:
+            row = await self.db.fetch_one(
+                """
+                SELECT id, name, stripe_customer_id
+                FROM organizations
+                WHERE id = $1
+                """,
+                (organization_id,),
+            )
+        except Exception as exc:
+            if allow_insecure_defaults():
+                logger.warning("Billing DB unavailable while fetching org %s: %s", organization_id, exc)
+                return {"id": organization_id, "name": f"Org {organization_id}", "stripe_customer_id": None}
+            raise
         if not row:
+            if allow_insecure_defaults():
+                logger.warning("Organization %s not found; continuing with in-memory billing state", organization_id)
+                return {"id": organization_id, "name": f"Org {organization_id}", "stripe_customer_id": None}
             raise BillingServiceError(f"Organization {organization_id} not found.")
         return dict(row)
 
@@ -199,14 +209,20 @@ class BillingService:
             logger.exception("Failed to create Stripe customer: %s", exc)
             raise BillingServiceError(str(exc)) from exc
         customer_id = customer.get("id")
-        await self.db.execute(
-            """
-            UPDATE organizations
-            SET stripe_customer_id = $2, billing_updated_at = NOW()
-            WHERE id = $1
-            """,
-            (organization["id"], customer_id),
-        )
+        try:
+            await self.db.execute(
+                """
+                UPDATE organizations
+                SET stripe_customer_id = $2, billing_updated_at = NOW()
+                WHERE id = $1
+                """,
+                (organization["id"], customer_id),
+            )
+        except Exception as exc:
+            if allow_insecure_defaults():
+                logger.warning("Failed to persist Stripe customer for org %s: %s", organization.get("id"), exc)
+            else:
+                raise
         return customer_id
 
     async def _resolve_organization_id(self, event: Dict[str, Any], payload: Dict[str, Any]) -> Optional[str]:
@@ -221,10 +237,16 @@ class BillingService:
     async def _lookup_org_by_customer(self, customer_id: Optional[str]) -> Optional[str]:
         if not customer_id:
             return None
-        row = await self.db.fetch_one(
-            "SELECT id FROM organizations WHERE stripe_customer_id = $1",
-            (customer_id,),
-        )
+        try:
+            row = await self.db.fetch_one(
+                "SELECT id FROM organizations WHERE stripe_customer_id = $1",
+                (customer_id,),
+            )
+        except Exception as exc:
+            if allow_insecure_defaults():
+                logger.warning("Billing DB unavailable while mapping customer %s: %s", customer_id, exc)
+                return None
+            raise
         return row["id"] if row else None
 
     async def _record_event(self, organization_id: str, event: Dict[str, Any]) -> None:
@@ -243,7 +265,11 @@ class BillingService:
                 ),
             )
         except Exception as exc:
+            if allow_insecure_defaults():
+                logger.warning("Failed to persist billing event %s: %s", event.get("id"), exc)
+                return
             logger.warning("Failed to persist billing event %s: %s", event.get("id"), exc)
+            raise BillingServiceError("Failed to record billing event.") from exc
 
     async def _update_billing_state(
         self,
@@ -261,27 +287,33 @@ class BillingService:
         subscription_expires_at = self._epoch_to_datetime(current_period_end)
         trial_ends_at = self._epoch_to_datetime(trial_end)
 
-        await self.db.execute(
-            """
-            UPDATE organizations
-            SET
-                billing_status = $2,
-                stripe_customer_id = COALESCE($3, stripe_customer_id),
-                stripe_subscription_id = COALESCE($4, stripe_subscription_id),
-                subscription_expires_at = COALESCE($5, subscription_expires_at),
-                trial_ends_at = COALESCE($6, trial_ends_at),
-                billing_updated_at = NOW()
-            WHERE id = $1
-            """,
-            (
-                organization_id,
-                status,
-                stripe_customer_id,
-                subscription_id,
-                subscription_expires_at,
-                trial_ends_at,
-            ),
-        )
+        try:
+            await self.db.execute(
+                """
+                UPDATE organizations
+                SET
+                    billing_status = $2,
+                    stripe_customer_id = COALESCE($3, stripe_customer_id),
+                    stripe_subscription_id = COALESCE($4, stripe_subscription_id),
+                    subscription_expires_at = COALESCE($5, subscription_expires_at),
+                    trial_ends_at = COALESCE($6, trial_ends_at),
+                    billing_updated_at = NOW()
+                WHERE id = $1
+                """,
+                (
+                    organization_id,
+                    status,
+                    stripe_customer_id,
+                    subscription_id,
+                    subscription_expires_at,
+                    trial_ends_at,
+                ),
+            )
+        except Exception as exc:
+            if allow_insecure_defaults():
+                logger.warning("Failed to update billing state for org %s: %s", organization_id, exc)
+                return
+            raise
 
     @staticmethod
     def _epoch_to_datetime(value: Optional[int]) -> Optional[datetime]:

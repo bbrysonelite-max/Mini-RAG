@@ -330,18 +330,40 @@ function clearIngestAlert(){
   ingestAlerts.textContent="";
 }
 
-function refreshLastIngestCard(){
-  if(!metricLastIngest || !metricLastIngestDetail){ return; }
-  if(!historyItems.length){
-    metricLastIngest.textContent = "No ingests yet";
-    metricLastIngestDetail.textContent = "Run ingest to populate your knowledge base.";
-    return;
+async function fetchSourcesSummary(){
+  const resp = await fetch("/api/v1/sources");
+  if(!resp.ok){
+    throw new Error(`Failed to load sources (${resp.status})`);
   }
-  const last = historyItems[historyItems.length - 1];
-  const when = new Date(last.timestamp);
-  const formatted = when.toLocaleString();
-  metricLastIngest.textContent = `${last.type === "url" ? "URL batch" : "File upload"}`;
-  metricLastIngestDetail.textContent = `${formatted} • ${last.chunks || 0} chunks`;
+  const payload = await resp.json();
+  return Array.isArray(payload?.sources) ? payload.sources : [];
+}
+
+function formatTimestamp(value){
+  if(!value){ return "Unknown"; }
+  const date = new Date(value);
+  if(Number.isNaN(date.getTime())){ return "Unknown"; }
+  return date.toLocaleString();
+}
+
+async function refreshLastIngestCard(sources){
+  if(!metricLastIngest || !metricLastIngestDetail){ return; }
+  try{
+    const list = Array.isArray(sources) ? sources : await fetchSourcesSummary();
+    if(!list.length){
+      metricLastIngest.textContent = "No ingests yet";
+      metricLastIngestDetail.textContent = "Run ingest to populate your knowledge base.";
+      return;
+    }
+    const sorted = [...list].sort((a, b) => new Date(b.first_seen || 0) - new Date(a.first_seen || 0));
+    const latest = sorted[0];
+    const countDescription = typeof latest.chunk_count === "number" ? `${latest.chunk_count} chunks` : "Chunks unknown";
+    metricLastIngest.textContent = latest.display_name || latest.path || latest.url || "Recent ingestion";
+    metricLastIngestDetail.textContent = `${formatTimestamp(latest.first_seen)} • ${countDescription}`;
+  }catch(err){
+    metricLastIngest.textContent = "Unknown";
+    metricLastIngestDetail.textContent = err.message || "Unable to load ingestion history.";
+  }
 }
 
 async function refreshBillingStatus(){
@@ -599,12 +621,6 @@ $("ingestUrls").onclick=async()=>{
         errors.push(`${result.url}: No chunks written (video may not have transcripts)`);
         if(result.url){ failedUrls.push(result.url); }
       }
-      historyItems.push({
-        type: "url",
-        url: result.url,
-        chunks: result.written || 0,
-        timestamp: new Date().toISOString()
-      });
     });
 
     if(successCount > 0 && errorCount === 0){
@@ -620,8 +636,7 @@ $("ingestUrls").onclick=async()=>{
     }
 
     if(countEl) countEl.textContent = d.count || 0;
-    localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
-    updateHistory();
+    await refreshIngestionUI();
     await refreshStatsCard();
     
     if(failedUrls.length && retryUrlsBtn){
@@ -700,21 +715,39 @@ function updateFileList(){
     files.map(f => `<div class="small" style="padding:0.25rem">${f.name} (${(f.size/1024).toFixed(1)} KB)</div>`).join('');
 }
 
-let historyItems = JSON.parse(localStorage.getItem('ingestHistory') || '[]');
-function updateHistory(){
-  if(historyItems.length === 0){
-    ingestHistory.innerHTML = '<p class="small" style="color:#666">No ingestion history yet.</p>';
-  }else{
-    ingestHistory.innerHTML = historyItems.slice(-10).reverse().map(item => `
-    <div style="border-bottom:1px solid #eee;padding:0.5rem 0;font-size:0.9em">
-      <strong>${item.type}</strong>: ${item.name || item.url || 'Unknown'}
-      <div class="small" style="color:#666">${new Date(item.timestamp).toLocaleString()} | ${item.chunks || 0} chunks</div>
-    </div>
-  `).join('');
+async function updateHistory(sources){
+  if(!ingestHistory){ return; }
+  try{
+    const list = Array.isArray(sources) ? sources : await fetchSourcesSummary();
+    if(!list.length){
+      ingestHistory.innerHTML = '<p class="small" style="color:#666">No ingestion history yet.</p>';
+      return;
+    }
+    const sorted = [...list].sort((a, b) => new Date(b.first_seen || 0) - new Date(a.first_seen || 0));
+    ingestHistory.innerHTML = sorted.slice(0, 10).map(item => `
+      <div style="border-bottom:1px solid #eee;padding:0.5rem 0;font-size:0.9em">
+        <strong>${item.display_name || item.path || item.url || 'Unknown'}</strong>
+        <div class="small" style="color:#666">${formatTimestamp(item.first_seen)} | ${item.chunk_count || 0} chunks</div>
+      </div>
+    `).join('');
+  }catch(err){
+    ingestHistory.innerHTML = `<p class="small" style="color:#b91c1c">History unavailable: ${err.message || err}</p>`;
   }
-  refreshLastIngestCard();
 }
-updateHistory();
+
+async function refreshIngestionUI(){
+  try{
+    const sources = await fetchSourcesSummary();
+    await updateHistory(sources);
+    await refreshLastIngestCard(sources);
+  }catch(err){
+    await updateHistory([]);
+    await refreshLastIngestCard([]);
+  }
+  await refreshStatsCard();
+}
+
+refreshIngestionUI();
 
 $("upload").onclick=async()=>{
   const fs=fileInput.files; if(!fs.length){alert("Select files first"); return;}
@@ -788,12 +821,6 @@ $("upload").onclick=async()=>{
         errors.push(`${file.name}: No chunks written`);
         failedFiles.push(file);
       }
-      historyItems.push({
-        type: "file",
-        name: file.name,
-        chunks: result.written || 0,
-        timestamp: new Date().toISOString()
-      });
     });
 
     if(successCount > 0 && errorCount === 0){
@@ -809,8 +836,7 @@ $("upload").onclick=async()=>{
     }
 
     if(countEl) countEl.textContent = d.count || 0;
-    localStorage.setItem('ingestHistory', JSON.stringify(historyItems));
-    updateHistory();
+    await refreshIngestionUI();
     await refreshStatsCard();
 
     if(failedFiles.length && retryFilesBtn){

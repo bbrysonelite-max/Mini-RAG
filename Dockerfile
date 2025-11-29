@@ -1,3 +1,10 @@
+FROM node:20-alpine AS frontend
+WORKDIR /app/frontend-react
+COPY frontend-react/package*.json ./
+RUN npm install --legacy-peer-deps
+COPY frontend-react .
+RUN npm run build
+
 FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -18,6 +25,7 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
+COPY --from=frontend /app/frontend-react/dist /app/frontend-react/dist
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \

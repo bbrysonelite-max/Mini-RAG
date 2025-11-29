@@ -1,4 +1,4 @@
-import os, json, subprocess, hashlib, re, logging, asyncio, time
+import os, json, subprocess, hashlib, re, logging, asyncio, time, uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Sequence, Tuple, Set
 from pathlib import Path
@@ -64,6 +64,14 @@ except ImportError as e:
 
 from config_utils import ensure_not_placeholder, allow_insecure_defaults
 
+# Optional vector store for persistent chunk storage
+try:
+    from vector_store import VectorStore
+    VECTOR_STORE_AVAILABLE = True
+except ImportError:
+    VECTOR_STORE_AVAILABLE = False
+    VectorStore = None  # type: ignore
+
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
 BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
 BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
@@ -102,6 +110,51 @@ instrumentator.instrument(app).expose(
     endpoint="/metrics",
     include_in_schema=False,
 )
+
+
+def _get_vector_store() -> Optional["VectorStore"]:
+    if not VECTOR_STORE_AVAILABLE or DB is None:
+        return None
+    global VECTOR_STORE_INSTANCE
+    if VECTOR_STORE_INSTANCE is None:
+        try:
+            VECTOR_STORE_INSTANCE = VectorStore(DB)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Vector store unavailable: %s", exc)
+            VECTOR_STORE_INSTANCE = None
+    return VECTOR_STORE_INSTANCE
+
+
+def _normalize_chunk_uuid(raw_id: str, fallback: int) -> str:
+    if not raw_id:
+        return str(uuid.uuid5(uuid.NAMESPACE_OID, str(fallback)))
+    try:
+        return str(uuid.UUID(raw_id))
+    except ValueError:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, raw_id))
+
+
+async def _persist_chunks_to_db() -> None:
+    store = _get_vector_store()
+    if not store:
+        return
+    try:
+        ensure_index(require=False)
+        if not CHUNKS:
+            return
+        context = await store.ensure_default_context()
+        entries = [
+            (_normalize_chunk_uuid(chunk.get("id"), idx), chunk)
+            for idx, chunk in enumerate(CHUNKS)
+        ]
+        await store.ensure_chunks(entries, context)
+    except Exception as exc:
+        if allow_insecure_defaults():
+            logging.getLogger(__name__).warning("Chunk persistence skipped: %s", exc)
+        else:
+            logging.getLogger(__name__).exception("Chunk persistence failed")
+            raise
+
 
 # CORS
 _cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
@@ -823,6 +876,7 @@ USER_SERVICE: Optional[UserService] = None
 API_KEY_SERVICE: Optional[ApiKeyService] = None
 QUOTA_SERVICE: Optional[QuotaService] = None
 BILLING_SERVICE: Optional[BillingService] = None
+VECTOR_STORE_INSTANCE: Optional["VectorStore"] = None
 
 STRIPE_API_KEY = ensure_not_placeholder(
     "STRIPE_API_KEY",
@@ -1181,7 +1235,13 @@ async def google_callback(request: Request):
         logger.error(f"OAuth callback error: {e}", exc_info=True)
         import traceback
         logger.error(traceback.format_exc())
-        return RedirectResponse(url="/app/?error=auth_failed")
+        raise HTTPException(status_code=400, detail="OAuth callback failed")
+
+
+@app.get("/auth/callback")
+async def legacy_google_callback(request: Request):
+    """Backward-compatible alias for OAuth callback."""
+    return await google_callback(request)
 
 @app.get("/auth/logout")
 async def logout():
@@ -1270,6 +1330,10 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
         duration = asyncio.get_event_loop().time() - start_time
         ASK_REQUEST_COUNTER.labels(outcome=outcome, status_code=str(status_code)).inc()
         ASK_LATENCY.labels(outcome=outcome).observe(duration)
+
+
+# Expose ask endpoint under API v1 namespace for backwards compatibility
+api_v1.post("/ask")(ask)
 
 def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
     """Process query synchronously (called from async context)."""
@@ -1396,7 +1460,13 @@ async def ingest_urls(request: Request, urls: str = Form(...), language: str = F
         )
         return {"job_id": job.id, "queued": True, "status": "queued"}
 
-    return await _ingest_urls_core(user, workspace_id, api_key_principal, url_req, urls_list)
+    result = await _ingest_urls_core(user, workspace_id, api_key_principal, url_req, urls_list)
+    if result.get("total_written", 0) > 0:
+        await _persist_chunks_to_db()
+    return result
+
+# Provide API v1 alias for legacy clients/tests
+api_v1.post("/ingest/urls")(ingest_urls)
 
 
 async def _ingest_urls_core(
@@ -1585,9 +1655,19 @@ async def _ingest_urls_core(
             chunk_delta=total,
             current_chunk_total=current_chunk_total,
         )
-    global _chunk_count_cache, _chunk_count_stamp
+    global _chunk_count_cache, _chunk_count_stamp, INDEX, CHUNKS
     _chunk_count_cache = None
     _chunk_count_stamp = None
+    
+    # Auto-rebuild index after ingestion
+    if total > 0:
+        INDEX = None
+        CHUNKS = []
+        try:
+            ensure_index(require=False)
+            logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+        except Exception as e:
+            logger.warning("Failed to auto-rebuild index: %s", e)
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 
@@ -1648,7 +1728,7 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
             response["partial_results"] = initial_results
         return response
 
-    return await _ingest_files_core(
+    result = await _ingest_files_core(
         user,
         workspace_id,
         api_key_principal,
@@ -1656,6 +1736,11 @@ async def ingest_files(request: Request, files: List[UploadFile] = File(...), la
         language,
         initial_results,
     )
+    if result.get("total_written", 0) > 0:
+        await _persist_chunks_to_db()
+    return result
+
+api_v1.post("/ingest/files")(ingest_files)
 
 @app.post("/api/billing/checkout")
 async def create_billing_checkout(request: Request, payload: BillingCheckoutRequest):
@@ -1922,9 +2007,11 @@ async def get_sources(request: Request):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
-        require=True,
+        require=False,
     )
     user_id = user.get("user_id") if user else None
+    if not user and not api_key_principal and not LOCAL_MODE:
+        return {"sources": [], "count": 0}
     if api_key_principal and user_id is None:
         user_id = api_key_principal.user_id
     sources = get_unique_sources(CHUNKS, user_id=user_id, workspace_id=workspace_id)
@@ -2440,8 +2527,18 @@ async def _ingest_files_core(
             chunk_delta=total,
             current_chunk_total=current_chunk_total,
         )
-    global _chunk_count_cache, _chunk_count_stamp
+    global _chunk_count_cache, _chunk_count_stamp, INDEX, CHUNKS
     _chunk_count_cache = None
     _chunk_count_stamp = None
+    
+    # Auto-rebuild index after ingestion
+    if total > 0:
+        INDEX = None
+        CHUNKS = []
+        try:
+            ensure_index(require=False)
+            logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+        except Exception as e:
+            logger.warning("Failed to auto-rebuild index: %s", e)
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
