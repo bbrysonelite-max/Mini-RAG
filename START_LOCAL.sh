@@ -22,8 +22,11 @@ set -a
 source .env
 set +a
 
-# Enable insecure defaults for local dev
+# Simple mode: disable optional services for faster dev iteration
+export LOCAL_MODE=true
 export ALLOW_INSECURE_DEFAULTS=true
+unset DATABASE_URL ANTHROPIC_API_KEY MINI_RAG_API_KEY REDIS_URL
+# Keep OPENAI_API_KEY from .env so LLM pipeline works
 
 echo "Environment loaded:"
 echo "  ✓ GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:0:20}..."
@@ -60,5 +63,6 @@ echo ""
 
 # Start server
 $PYTHON -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
 
 

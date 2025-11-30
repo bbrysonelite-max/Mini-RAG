@@ -2,13 +2,13 @@
 
 **Date:** November 29, 2025  
 **Deployment:** https://mini-rag-production.up.railway.app/app/  
-**Status:** ✅ **PRODUCTION READY**
+**Status:** ⚠️ **Ready only after configuration & missing tests are completed**
 
 ---
 
 ## Test Results Summary
 
-### Automated Tests: 58/58 PASSING ✅
+### Automated Tests: 58/58 PASSING ✅ *(last full run: Nov 23, 2025)*
 
 ```
 58 passed, 180 warnings in 156.89s (0:02:36)
@@ -25,7 +25,7 @@
 - ✅ Security headers
 - ✅ SDK client
 
-### Production Verification Tests: 6/6 PASSING ✅
+### Production Verification Tests: 6/6 PASSING ✅ *(last run: Nov 23, 2025 before latest docs deploy)*
 
 **Test 1: Health Check**
 ```json
@@ -163,6 +163,18 @@
 
 ---
 
+## What Remains Untested (See `TEST_REPORT.md`)
+
+- Redis caching + `request_dedup.py` flows (no automated coverage, never exercised manually)
+- Legacy + React UI `/api/v1` migration (not opened in a browser since the refactor)
+- Batch delete endpoint and CLI helpers (no tests)
+- Load tests (`scripts/load_test.py`), smoke tests, and `one_click_deploy.sh` platform scripts (never executed)
+- Docker Compose stack with Redis/Postgres (fails locally until Docker Desktop is configured)
+
+Until these areas are covered, treat the “production ready” claims as aspirational.
+
+---
+
 ## Deployment Status
 
 **Current Branch:** main  
@@ -211,26 +223,18 @@ curl https://mini-rag-production.up.railway.app/api/v1/sources
 
 ## The Truth
 
-**This software is NOW production-ready.**
+**The codebase can be production-ready once you finish the checklist. Right now:**
 
-- All core features work
-- All tests pass
-- Production deployment stable
-- Data persists across redeploys
-- Real documents uploaded and queryable
+- ✅ Core BM25 pipeline, quotas, billing guards, and observability worked as of Nov 23, 2025.
+- ⚠️ Auth bypass (`LOCAL_MODE=true`), no embeddings, no Redis, Stripe disabled.
+- ⚠️ Several new components (cache/dedup, `/api/v1` UI, load tests, deploy scripts) have never been exercised.
+- ⚠️ Demo data still lives in `out/chunks.jsonl`; scrub it before inviting customers.
 
-**It's not perfect:**
-- No vector embeddings yet (BM25 only, still accurate)
-- No Redis cache yet (works fine, just slower)
-- LOCAL_MODE bypass active (turn off for real auth)
-- Stripe not connected (can't charge yet)
-
-**But you CAN:**
-- Use it in your business TODAY
-- Upload your documents
-- Get accurate answers
-- Share with beta users
-- Test with customers
+**You still need to:**
+- Replace every placeholder secret and re-run deploys with `ALLOW_INSECURE_DEFAULTS=false`.
+- Disable `LOCAL_MODE`, verify OAuth/API key flows, and re-run the manual browser tests.
+- Execute the missing automated suites listed above.
+- Connect Stripe or explicitly disable billing endpoints if you’re not ready to charge.
 
 ---
 

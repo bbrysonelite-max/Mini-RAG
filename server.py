@@ -18,6 +18,7 @@ from retrieval import load_chunks, SimpleIndex, format_citation, get_unique_sour
 from score import score_answer
 # Import ingestion functions directly from raglite for user_id support
 from raglite import ingest_youtube, ingest_transcript, ingest_docs
+from rag_pipeline import RAGPipeline
 
 from api_key_service import ApiKeyService
 from api_key_auth import configure_api_key_auth, get_api_key_principal, APIKeyPrincipal
@@ -42,6 +43,13 @@ from telemetry import setup_tracing
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
 import httpx
+try:
+    from model_service import GenerateOptions, Message
+    from model_service_impl import ConcreteModelService
+    MODEL_SERVICE_AVAILABLE = True
+except ImportError:
+    MODEL_SERVICE_AVAILABLE = False
+    ConcreteModelService = None  # type: ignore
 
 try:
     from opentelemetry import trace
@@ -84,8 +92,21 @@ SECRET_KEY_PLACEHOLDERS = {DEFAULT_SECRET_KEY, "changeme"}
 _METRICS_WIRED = False
 INDEX = None
 CHUNKS = []
+CHUNK_ID_MAP: Dict[str, Dict[str, Any]] = {}
+MODEL_SERVICE = None
+RAG_PIPELINE: Optional[RAGPipeline] = None
 _chunk_count_cache: Optional[int] = None
 _chunk_count_stamp: Optional[float] = None
+try:
+    RAG_MAX_TOKENS = int(os.getenv("RAG_MAX_TOKENS", "512"))
+except ValueError:
+    RAG_MAX_TOKENS = 512
+RAG_MODEL_PROFILE = os.getenv("RAG_MODEL_PROFILE", "balanced")
+DEFAULT_SYSTEM_PROMPT = os.getenv(
+    "RAG_SYSTEM_PROMPT",
+    "You are Mini-RAG, an assistant that answers questions using the provided context. "
+    "If the context is insufficient, say you do not have enough information.",
+)
 API_DESCRIPTION = (
     "RAG Talking Agent backend.\n\n"
     "Versioned REST endpoints are available under `/api/v1`. "
@@ -720,7 +741,12 @@ async def _record_query_baseline() -> None:
     """Capture a baseline ask latency sample for dashboards."""
     start = time.perf_counter()
     try:
-        await asyncio.to_thread(_process_query, "baseline measurement", 1, {}, None)
+        await _process_query_async(
+            "baseline measurement",
+            1,
+            {"user_id": None, "role": "baseline"},
+            None,
+        )
     except IndexNotFoundError:
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
         ASK_LATENCY.labels(outcome="baseline_noindex").observe(max(duration_ms / 1000.0, 0.0))
@@ -903,7 +929,7 @@ STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "http://localho
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection on startup (if configured)."""
-    global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE
+    global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE, MODEL_SERVICE, RAG_PIPELINE
     
     # Try to initialize database if connection string is provided
     db_url = os.environ.get("DATABASE_URL")
@@ -949,6 +975,10 @@ async def startup_event():
 
     if INDEX is None or not CHUNKS:
         ensure_index(require=False)  # Don't crash on startup if no documents yet
+
+    if MODEL_SERVICE is None:
+        MODEL_SERVICE = _init_model_service()
+    RAG_PIPELINE = _init_rag_pipeline(MODEL_SERVICE)
 
     if BACKGROUND_JOBS_ENABLED:
         BACKGROUND_QUEUE = BackgroundTaskQueue()
@@ -1030,7 +1060,7 @@ def ensure_index(require: bool = True):
         require: If True, raise IndexNotFoundError when no chunks exist.
                  If False, gracefully handle empty state (for startup).
     """
-    global INDEX, CHUNKS
+    global INDEX, CHUNKS, CHUNK_ID_MAP
     if INDEX is None:
         if not os.path.exists(CHUNKS_PATH):
             if require:
@@ -1043,6 +1073,9 @@ def ensure_index(require: bool = True):
                 return
         try:
             CHUNKS = load_chunks(CHUNKS_PATH)
+            CHUNK_ID_MAP = {
+                chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
+            }
         except Exception as e:
             logger.error(f"Failed to load chunks: {e}", exc_info=True)
             if require:
@@ -1061,12 +1094,52 @@ def ensure_index(require: bool = True):
         try:
             INDEX = SimpleIndex(CHUNKS)
             logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
+            _refresh_rag_pipeline_index()
         except Exception as e:
             logger.error(f"Failed to build index: {e}", exc_info=True)
             if require:
                 raise IndexNotFoundError("Failed to build search index.")
             else:
                 INDEX = SimpleIndex([])
+
+
+def _init_model_service():
+    if not MODEL_SERVICE_AVAILABLE or not ConcreteModelService:
+        logger.info("Model service implementation not available")
+        return None
+    try:
+        service = ConcreteModelService()
+        logger.info("Model service initialized")
+        return service
+    except Exception as exc:
+        logger.warning("Model service disabled: %s", exc)
+        return None
+
+
+def _init_rag_pipeline(model_service) -> Optional[RAGPipeline]:
+    try:
+        pipeline = RAGPipeline(
+            chunks_path=CHUNKS_PATH,
+            model_service=model_service,
+            use_pgvector=False,
+        )
+        logger.info(
+            "RAG pipeline initialized (llm_enabled=%s)",
+            bool(model_service),
+        )
+        return pipeline
+    except Exception as exc:
+        logger.warning("RAG pipeline unavailable: %s", exc)
+        return None
+
+
+def _refresh_rag_pipeline_index():
+    if not RAG_PIPELINE:
+        return
+    try:
+        RAG_PIPELINE._load_index()  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.warning("Unable to refresh RAG pipeline index: %s", exc)
 
 @app.get("/")
 def root(): return HTMLResponse('<meta http-equiv="refresh" content="0; url=/app/">')
@@ -1298,7 +1371,7 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
             {"user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
         ):
             result = await asyncio.wait_for(
-                asyncio.to_thread(_process_query, ask_req.query, ask_req.k, user, workspace_id),
+                _process_query_async(ask_req.query, ask_req.k, user, workspace_id),
                 timeout=30.0  # 30 second timeout
             )
         _log_event(
@@ -1335,26 +1408,127 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
 # Expose ask endpoint under API v1 namespace for backwards compatibility
 api_v1.post("/ask")(ask)
 
-def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
-    """Process query synchronously (called from async context)."""
+async def _process_query_async(
+    query: str,
+    k: int,
+    user: Dict[str, Any],
+    workspace_id: Optional[str] = None,
+):
+    """Prefer the LLM pipeline when configured, but fall back to the legacy answer."""
     ensure_index()
-    # Filter by user_id for data isolation
-    user_id = user.get('user_id') if user else None
+    if RAG_PIPELINE and MODEL_SERVICE:
+        try:
+            return await _process_query_with_llm(query, k, user, workspace_id)
+        except Exception as exc:
+            logger.warning("LLM pipeline failed, falling back to chunk mode: %s", exc, exc_info=True)
+    return _process_query_legacy(query, k, user, workspace_id)
+
+
+async def _process_query_with_llm(
+    query: str,
+    k: int,
+    user: Dict[str, Any],
+    workspace_id: Optional[str] = None,
+):
+    """Answer using RAGPipeline + the configured ModelService."""
+    if not (RAG_PIPELINE and MODEL_SERVICE):
+        raise RuntimeError("LLM pipeline not initialized")
+
+    retrieve_opts = {
+        "projectId": workspace_id or "default",
+        "userQuery": query,
+        "topK_bm25": max(k, RAG_PIPELINE.topK_bm25),
+        "topK_vector": RAG_PIPELINE.topK_vector,
+        "maxChunksForContext": max(3, min(k, RAG_PIPELINE.maxChunksForContext)),
+    }
+    retrieve_result = await RAG_PIPELINE.retrieve(retrieve_opts)
+    chunk_entries = retrieve_result.get("chunks") or []
+    if not chunk_entries:
+        raise ValueError("No relevant chunks retrieved")
+
+    chunk_details = []
+    context_sections = []
+    citations = []
+    raw_chunks = []
+    for idx, entry in enumerate(chunk_entries[:k]):
+        chunk_meta = entry.get("chunk", {}) or {}
+        chunk_id = chunk_meta.get("id")
+        raw_chunk = _get_chunk_by_id(chunk_id)
+        raw_chunks.append(raw_chunk)
+        content = (chunk_meta.get("text") or (raw_chunk or {}).get("content") or "").strip()
+        citation = format_citation(raw_chunk) if raw_chunk else chunk_meta.get("id", "Unknown source")
+        context_sections.append(f"Source {idx + 1}:\n{content}")
+        citations.append(citation)
+        metadata = (raw_chunk or {}).get("metadata", {})
+        chunk_details.append(
+            {
+                "index": idx + 1,
+                "content": content,
+                "score": float(entry.get("score", 0.0)),
+                "citation": citation,
+                "source": (raw_chunk or {}).get("source", {}),
+                "metadata": {
+                    "chunk_index": metadata.get("chunk_index"),
+                    "chunk_count": metadata.get("chunk_count"),
+                    "start_sec": metadata.get("start_sec"),
+                    "end_sec": metadata.get("end_sec"),
+                    "language": metadata.get("language", "en"),
+                },
+            }
+        )
+
+    context_text = "\n\n".join(context_sections)
+    user_prompt = (
+        "Use only the context below to answer the user's question. "
+        "If the context does not contain the answer, reply with \"I don't have enough information.\""
+        f"\n\nContext:\n{context_text}\n\nQuestion:\n{query}"
+    )
+    messages: List[Message] = [
+        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    generate_opts: GenerateOptions = {
+        "messages": messages,
+        "modelProfile": RAG_MODEL_PROFILE,
+        "maxTokens": RAG_MAX_TOKENS,
+    }
+    gen_result = await MODEL_SERVICE.generate(generate_opts)  # type: ignore[func-returns-value]
+    answer = (gen_result.get("content") or "").strip()
+    if not answer:
+        raise RuntimeError("LLM returned an empty response")
+
+    source_chunks = [chunk for chunk in raw_chunks if chunk]
+    score = score_answer(query, answer, source_chunks or CHUNKS[:k])
+
+    return {
+        "answer": answer,
+        "citations": citations,
+        "score": score,
+        "count": _count_lines(CHUNKS_PATH),
+        "chunks": chunk_details,
+    }
+
+
+def _process_query_legacy(query: str, k: int, user: Dict[str, Any], workspace_id: Optional[str] = None):
+    """Chunk-only answer used when the LLM path is unavailable."""
+    ensure_index()
+    user_id = user.get("user_id") if user else None
     ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
-    top = [CHUNKS[i] for i,_ in ranked]
-    snippets = [c.get("content","").strip() for c in top[:3]]
+    top = [CHUNKS[i] for i, _ in ranked]
+    snippets = [c.get("content", "").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]
     text = " ".join(snippets)
-    if len(text) > 900: text = text[:900].rsplit(" ",1)[0]+"…"
+    if len(text) > 900:
+        text = text[:900].rsplit(" ", 1)[0] + "…"
     ans = f"{text}\n\nSources:\n" + "\n".join(f"- {u}" for u in cites)
     sc = score_answer(query, ans, top)
     
-    # Enhanced chunk details with scores and positions
     chunk_details = []
     for idx, (i, score) in enumerate(ranked):
         chunk = CHUNKS[i]
         meta = chunk.get("metadata", {})
-        chunk_details.append({
+        chunk_details.append(
+            {
             "index": idx + 1,
             "content": chunk.get("content", "").strip(),
             "score": float(score),
@@ -1365,17 +1539,31 @@ def _process_query(query: str, k: int, user: Dict[str, Any], workspace_id: Optio
                 "chunk_count": meta.get("chunk_count"),
                 "start_sec": meta.get("start_sec"),
                 "end_sec": meta.get("end_sec"),
-                "language": meta.get("language", "en")
+                    "language": meta.get("language", "en"),
+                },
             }
-        })
+        )
     
     return {
         "answer": ans,
         "citations": cites,
         "score": sc,
         "count": _count_lines(CHUNKS_PATH),
-        "chunks": chunk_details
+        "chunks": chunk_details,
     }
+
+
+def _get_chunk_by_id(chunk_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not chunk_id:
+        return None
+    cached = CHUNK_ID_MAP.get(chunk_id)
+    if cached:
+        return cached
+    for chunk in CHUNKS:
+        if chunk.get("id") == chunk_id:
+            CHUNK_ID_MAP[chunk_id] = chunk
+            return chunk
+    return None
 
 @app.get(
     "/api/stats",

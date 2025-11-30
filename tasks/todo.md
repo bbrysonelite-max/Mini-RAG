@@ -1,3 +1,38 @@
+# Session Plan – Nov 29, 2025 (Railway Healthcheck Failure Investigation)
+
+**Goal:** Diagnose why the latest Railway deployment fails its network healthcheck after the docs update and outline the smallest safe fix to restore green deploys.
+
+## TODOs
+- [ ] **HCF-1: Capture current deployment context** – document start command, healthcheck expectations, and required env toggles by reviewing `railway.json`, `render.yaml`, and prior deployment notes.
+- [ ] **HCF-2: Trace startup + `/health` dependencies** – follow FastAPI startup (database init, chunk index warmup, Stripe placeholder validation) to spot conditions that crash or hang the process before the healthcheck responds.
+- [ ] **HCF-3: Reconcile with recent commits/runtime inputs** – confirm the docs-only change didn’t alter runtime code, and list any external inputs (env vars, Railway logs) needed from the user to reproduce the failure.
+- [ ] **HCF-4: Define remediation plan** – decide whether the fix is code or configuration, outline the minimal change, and specify verification steps to prove `/health` stays green in Railway.
+
+## Review
+- **HCF-1:** Railway uses the stock uvicorn start command with `/health` probe and 60s timeout (`railway.json`). Render config mirrors this and injects prod env vars (real `SECRET_KEY`, `ALLOW_INSECURE_DEFAULTS=false`). Deploys therefore hinge on Railway providing unique secrets and reachable backing services.
+- **HCF-2:** FastAPI startup does a synchronous psycopg pool init (`init_database`), JSONL index warmup, and optional background queue spin-up before serving `/health`. Any missing secrets, DB auth failures, or corrupted `out/chunks.jsonl` crash the process before the probe runs.
+- **HCF-3:** `git show c344d21` confirms the failing deploy only touched `DEPLOYMENT_STATUS.md`, so runtime behavior matches the last green commit (`db7047c`). Remaining variables are runtime inputs (Railway env + infra).
+- **HCF-4:** Recommended remediation: (1) set a strong `SECRET_KEY` or temporarily toggle `ALLOW_INSECURE_DEFAULTS=true` to confirm the placeholder guard isn’t tripping; (2) verify `DATABASE_URL` credentials + network from Railway (e.g., `railway run psql`); (3) re-deploy and watch logs until `/health` returns JSON (look for `healthcheck.ping_sent`). If failures persist, capture the first 100 lines of Railway logs so we can match them to the startup steps above.
+
+---
+
+# Session Plan – Nov 29, 2025 (Final Project Review & Gaps Assessment)
+
+**Goal:** Audit the current project state so we can answer “what remains to be improved, tested, and reviewed” with references to the existing documentation.
+
+## TODOs
+- [ ] **FPR-1: Review canonical status docs** – read `README.md`, `ROADMAP.md`, `DEPLOYMENT_STATUS.md`, and `START_HERE.md` to capture declared feature/state claims.
+- [ ] **FPR-2: Inventory remaining feature gaps** – cross-check the docs above with live code (billing, hybrid search, React UI, background jobs) and note any partially implemented or aspirational items.
+- [ ] **FPR-3: Catalog testing coverage vs. expectations** – inspect `TEST_REPORT.md`, `FINAL_TEST_REPORT.md`, and the pytest suites to highlight missing end-to-end, browser, or deployment tests.
+- [ ] **FPR-4: Summarize review priorities** – consolidate findings into a concise list of improvements/tests/reviews still needed, referencing the source documents for each.
+
+## Review
+- **FPR-1:** README, ROADMAP, DEPLOYMENT_STATUS, and START_HERE now reflect actual runtime requirements (auth disabled, BM25-only, Stripe off, Redis optional).
+- **FPR-2:** Documented remaining feature gaps: embeddings/caching/background jobs disabled by default, React shell still preview, Kubernetes/dev guides/compliance docs outstanding.
+- **FPR-3:** Captured testing shortfalls from `TEST_REPORT.md` (Redis cache, dedup, browser UI, load tests, deployment scripts, Docker Compose) and mirrored them in the public status docs.
+- **FPR-4:** Propagated the findings into `docs/ARCHITECTURE.md`, `README.md`, `START_HERE.md`, `DEPLOYMENT_STATUS.md`, and `FINAL_TEST_REPORT.md` so future reviewers see the same honest picture.
+
+
 # Session Plan – Nov 23, 2025 (Project Review Backlog Synthesis)
 
 **Goal:** Evaluate the current codebase and documentation to assemble a prioritized backlog that captures outstanding work across backend, frontend, infrastructure, and operations.

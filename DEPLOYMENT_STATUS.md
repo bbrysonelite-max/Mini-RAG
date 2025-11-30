@@ -1,13 +1,16 @@
 # Mini-RAG Deployment Status
 
-**Updated:** November 29, 2025 01:23 AM  
+**Updated:** November 29, 2025 3:30 PM  
 **Production URL:** https://mini-rag-production.up.railway.app/app/  
-**Deployment Status:** ✅ STABLE AND HEALTHY  
-**Current Version:** db7047c (revert to stable)
+**Deployment Status:** ⚠️ Requires configuration (auth disabled, billing off)  
+**Current Version:** main (LLM pipeline integrated locally, awaiting production deploy)  
+**Local Dev:** Simple mode working (LOCAL_MODE + OpenAI, no DB/auth required)
 
 ---
 
 ## What's WORKING Right Now (Verified)
+
+> Latest incident (Nov 29, 2025 01:27 AM): Railway deploy failed healthcheck because `SECRET_KEY` was left as a placeholder and `ALLOW_INSECURE_DEFAULTS=false`. Regenerating a real secret restored the service. Keep this in mind for future deploys.
 
 ### ✅ Core Features
 - **File Upload:** Drag-and-drop working in React UI
@@ -50,11 +53,17 @@
 - **Risk:** Public exposure if URL leaks
 - **Fix:** Set `LOCAL_MODE=false` when ready for real auth
 
-### ❌ Vector Embeddings (BM25 Only)
-- No semantic search yet
-- Answers are good but could be better
-- **Impact:** Misses conceptual similarities
-- **Fix:** Would require adding embedding generation (broke deployment)
+### ✅ LLM Answers (Now Working Locally)
+- `/ask` endpoint now calls OpenAI to generate natural answers (not just chunk snippets)
+- Requires `OPENAI_API_KEY` in environment
+- Falls back to chunk mode if LLM unavailable
+- **Production:** Update Railway env vars to enable LLM path in deployed app
+
+### ⚠️ Vector Embeddings (BM25 Only in Production)
+- Semantic search requires running embedding generation job
+- Local dev ready; production needs embedding workflow triggered
+- **Impact:** BM25-only retrieval (still accurate, just keyword-based)
+- **Fix:** Run embedding job once with valid OpenAI key
 
 ### ❌ Redis Caching
 - Every query hits OpenAI API
@@ -75,6 +84,12 @@
 - **Impact:** Can't monetize
 - **Fix:** Set real STRIPE_API_KEY
 
+### ⚠️ Not Yet Tested (See `TEST_REPORT.md`)
+- Redis cache + request dedup (`cache_service.py`, `request_dedup.py`) have zero automated or manual coverage.
+- React workspace switcher and legacy `/api/v1` migration were not exercised in a browser after the last refactor.
+- New batch delete endpoint, load tests, smoke tests, and deployment scripts have **never been run**.
+- Docker Compose with Redis/Postgres still fails locally until Docker Desktop is configured.
+
 ---
 
 ## Test Results (Evidence-Based)
@@ -82,14 +97,16 @@
 ### Automated Tests
 ```
 pytest tests/ -v
-58/58 PASSED
+58/58 PASSED  (last full run: Nov 23, 2025 before docs-only commits)
 ```
+No additional suites have been executed since then; Redis/cache/dedup, load tests, and deployment scripts remain unverified.
 
 ### Production API Tests
 ```
 python3 test_production_comprehensive.py
-12/12 PASSED
+12/12 PASSED  (last run: Nov 23, 2025)
 ```
+Manual browser smoke tests (file upload, ask flow) must be repeated whenever `LOCAL_MODE` is disabled or new data is ingested.
 
 **Tests verified:**
 1. Health check responds

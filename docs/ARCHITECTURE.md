@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Mini-RAG is a multi-tenant RAG (Retrieval-Augmented Generation) system built for production deployment with enterprise features.
+Mini-RAG targets a multi-tenant RAG (Retrieval-Augmented Generation) system with enterprise features. The current production deployment, however, runs as a **single FastAPI/uvicorn process** on Railway with PostgreSQL for metadata and the JSONL corpus on disk. Optional components (Redis cache, background workers, multi-instance load balancing, OpenAI/Anthropic embeddings) are **disabled by default** until operators provision the required credentials and services. The diagrams below show the intended target state; the “Deployment Reality” section summarizes what is actually live today.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -46,6 +46,21 @@ Mini-RAG is a multi-tenant RAG (Retrieval-Augmented Generation) system built for
 
 ---
 
+## Deployment Reality (Nov 29, 2025)
+
+| Component                        | Status / Notes |
+|----------------------------------|----------------|
+| FastAPI app                      | Single uvicorn process (no load balancer yet) |
+| PostgreSQL + pgvector            | Required and running; used for auth/quota metadata (chunks still live in JSONL) |
+| JSONL chunk store (`out/chunks.jsonl`) | Primary corpus; must be scrubbed of demo data before launch |
+| Redis cache                      | **Optional** – not enabled in Railway; `cache_service.py` untested |
+| Background job queue             | **Optional** – disabled in production (`BACKGROUND_JOBS_ENABLED=false`) |
+| Vector embeddings (OpenAI/Anthropic) | **Disabled** – BM25-only search until real API keys + embedding job are provided |
+| Stripe billing                   | Webhooks implemented but **inactive** without real `STRIPE_*` secrets |
+| OAuth / Auth                     | Code ready, but production currently runs with `LOCAL_MODE=true` (bypass) |
+
+Keep this table in sync with `DEPLOYMENT_STATUS.md` so engineers and reviewers understand which parts of the target architecture are operational.
+
 ## Component Architecture
 
 ### FastAPI Application Layer
@@ -71,11 +86,11 @@ server.py
 └── Core Services
     ├── RAGPipeline (retrieval + generation)
     ├── QuotaService (usage tracking)
-    ├── BillingService (Stripe)
+    ├── BillingService (Stripe – inactive without real keys)
     ├── ApiKeyService (API key management)
     ├── UserService (user/org/workspace)
-    ├── CacheService (Redis)
-    └── RequestDeduplicator (concurrent request optimization)
+    ├── CacheService (**optional** Redis cache – not enabled in prod)
+    └── RequestDeduplicator (**optional**; requires cache service to provide wins)
 ```
 
 ---
@@ -106,8 +121,8 @@ server.py
    └─> If yes: wait for first to complete
 
 6. Retrieval
-   ├─> BM25 keyword search
-   ├─> pgvector semantic search (if OpenAI key set)
+   ├─> BM25 keyword search (always on)
+   ├─> pgvector semantic search (if OpenAI/Anthropic embeddings exist – disabled in current deployment)
    └─> Merge & rank chunks
 
 7. Generation
@@ -126,6 +141,8 @@ server.py
 10. Response
     └─> {answer, chunks, score, count}
 ```
+
+_Reality check:_ In production right now, steps 4 (cache lookup) and 8 (cache write) are skipped because Redis is not configured, and step 6 uses BM25 only because embeddings have not been generated.
 
 ### Ingestion Flow
 
@@ -156,14 +173,16 @@ server.py
 
 6. Index Rebuild
    ├─> If background jobs enabled: enqueue
-   └─> Else: rebuild immediately
+   └─> Else: rebuild immediately (default today)
 
 7. Cache Invalidation
-   └─> Clear workspace query cache
+   └─> Clear workspace query cache (no-op without Redis)
 
 8. Response
     └─> {message, chunks_added, job_id?}
 ```
+
+_Reality check:_ Without embeddings, Redis, or background workers, ingestion runs completely in-process: step 4 is skipped, step 6 performs a synchronous rebuild, and step 7 does nothing.
 
 ---
 
@@ -226,6 +245,8 @@ organization_billing_events (id, organization_id, event_id, event_type, payload,
 }
 ```
 
+_Reality check:_ The default corpus still contains demo data and empty `embedding` arrays until operators purge `out/chunks.jsonl` and generate real embeddings.
+
 **Future:** PostgreSQL table with pgvector
 ```sql
 chunks (id, workspace_id, source_id, content, embedding vector(1536))
@@ -263,6 +284,8 @@ Token Payload:
 }
 ```
 
+_Reality check:_ The current Railway deployment sets `LOCAL_MODE=true`, so the OAuth/JWT flow above is bypassed until operators disable the flag and supply Google credentials._
+
 ### API Keys (Programmatic Access)
 
 ```
@@ -293,7 +316,7 @@ Scopes:
 
 ## Caching Strategy
 
-### Redis Cache Layers
+### Redis Cache Layers (Optional)
 
 ```
 ┌─────────────────────────────────────┐
@@ -305,11 +328,13 @@ Scopes:
 │ workspace:<id>:sources   │ 10 min   │  ← Source list
 └──────────────────────────┴──────────┘
 
-Cache Invalidation Events:
+Cache Invalidation Events (only when Redis is configured):
 - Ingestion → Clear workspace queries
 - Source delete → Clear workspace queries
 - Dedupe/rebuild → Clear all queries
 - Manual → Clear specific workspace
+
+_Reality check:_ The shared Railway deployment does not provision Redis, so the cache structures above describe future-state behavior.
 ```
 
 ### Request Deduplication
@@ -398,6 +423,8 @@ Trace context propagated via:
 - PostgreSQL (read replicas)
 - Redis (cluster mode)
 - File storage (S3/shared NFS)
+
+_Reality check:_ Production currently runs a single FastAPI instance with no load balancer, Redis cluster, or shared file storage. The scaling plan above remains future work until those dependencies are provisioned.
 
 ### Load Balancing
 

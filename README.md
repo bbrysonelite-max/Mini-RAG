@@ -1,24 +1,36 @@
-# Mini-RAG: Production-Ready RAG System
+# Mini-RAG: Production-Ready _(When Configured)_ RAG System
 
-> **🎉 PROJECT COMPLETE - Ready to Deploy!**  
-> **👉 See [START_HERE.md](START_HERE.md) for one-command deployment**
+> **⚠️ Reality Check:** The codebase implements enterprise features, but the shared Railway deployment still runs with `LOCAL_MODE=true`, BM25-only search, no Redis cache, and Stripe disabled. Read `DEPLOYMENT_STATUS.md` before promising “production ready.”
+>
+> **👉 See [START_HERE.md](START_HERE.md) for setup steps _after_ you provision real secrets and services.**
 
-A production-ready, multi-tenant RAG (Retrieval-Augmented Generation) system with enterprise features: OAuth authentication, Stripe billing, Redis caching, comprehensive monitoring, and full deployment automation.
+Mini-RAG targets a multi-tenant RAG (Retrieval-Augmented Generation) system with OAuth, Stripe, quotas, observability, and deployment automation. Those capabilities only become “production ready” once you replace placeholders, scrub demo data, and enable the optional services described below.
 
 ## Features
 
-- **Multi-Tenant Architecture**: Organization & workspace isolation with role-based access
-- **Authentication**: Google OAuth + JWT sessions + API keys with scope enforcement
-- **Document Ingestion**: Support for PDF, DOCX, Markdown, TXT files
-- **YouTube Integration**: Automatic transcript extraction and ingestion
-- **Transcript Support**: VTT, SRT, and TXT transcript files
-- **Hybrid Search**: BM25 + pgvector embeddings (OpenAI/Anthropic)
-- **Web UI**: Browser-based interface with workspace switching
-- **Document Browser**: View, search, and manage ingested documents
-- **Usage Quotas**: Per-workspace request & storage limits
-- **Billing Integration**: Stripe subscriptions with automated trial management
-- **Observability**: Prometheus metrics + OpenTelemetry traces + structured logging
-- **Answer Scoring**: Coverage, groundedness, citation, and brevity metrics
+- **Multi-Tenant Architecture:** Organization & workspace isolation with role-based access (requires PostgreSQL; shipped)
+- **Authentication:** Google OAuth + JWT sessions + API keys (code ready, but Railway defaults to `LOCAL_MODE=true`)
+- **Document Ingestion:** PDF, DOCX, Markdown, TXT, VTT, SRT, YouTube transcripts (shipping)
+- **Hybrid Search:** BM25 always on; pgvector embeddings available _after_ you supply OpenAI/Anthropic keys and run the embedding job
+- **Web UI:** Legacy HTML app (`/app`) plus preview React shell (`/app-react`) – both need real auth + billing context to be fully accurate
+- **Usage Quotas:** Workspace-level request and chunk limits enforced when DATABASE_URL is configured
+- **Billing Integration:** Stripe checkout/portal/webhooks implemented but **inactive** until real `STRIPE_*` secrets exist
+- **Caching & Dedup:** Redis-backed cache/deduplicator implemented but **disabled by default**
+- **Observability:** Prometheus metrics + OpenTelemetry traces (available; exporters optional)
+- **Answer Scoring:** Coverage, groundedness, citation, and brevity metrics in responses
+
+### Current Deployment Reality (Nov 29, 2025)
+
+| Area | Status | Required to flip to “prod-ready” |
+|------|--------|-----------------------------------|
+| Auth | `LOCAL_MODE=true` (no login required) | Set `LOCAL_MODE=false`, configure Google OAuth, verify cookies |
+| Search | BM25 only | Provide OpenAI/Anthropic keys, generate embeddings, enable pgvector |
+| Caching/Dedup | Disabled | Provision Redis + set `REDIS_ENABLED=true` |
+| Billing | Stripe keys unset | Supply real `STRIPE_*` secrets, verify webhook endpoint |
+| Background jobs | Disabled | Set `BACKGROUND_JOBS_ENABLED=true`, monitor queue |
+| Data | `out/chunks.jsonl` ships demo rows | Scrub sample data before launch |
+
+See `DEPLOYMENT_STATUS.md` for the authoritative checklist.
 
 ## 🚀 Quick Start
 
@@ -42,7 +54,8 @@ pip install -r requirements.txt
 
 # 2. Set up environment
 cp PRODUCTION_ENV_TEMPLATE .env
-# Edit .env with your credentials
+# Edit .env with **real** credentials (SECRET_KEY, Google OAuth, PostgreSQL, Stripe, OpenAI, Redis)
+# Remove demo data from out/chunks.jsonl or point CHUNKS_PATH elsewhere
 
 # 3. Start services
 docker-compose up -d
@@ -52,6 +65,7 @@ docker exec -i mini-rag-db psql -U postgres -d rag_brain < db_schema.sql
 
 # 5. Verify health
 curl http://localhost:8000/health
+# 6. Disable LOCAL_MODE once auth is configured
 ```
 
 Then open your browser to `http://localhost:8000/app/`
@@ -89,7 +103,7 @@ npm run dev
 
 The dev server proxy points to `http://localhost:8000` for API calls. Production builds are created via `npm run build`.
 
-After building, the FastAPI app will serve the React UI at `http://localhost:8000/app-react` (the legacy UI remains at `/app` until the migration is complete).
+> ⚠️ The React shell is still in preview: it reuses the REST endpoints but lacks full auth/billing context until `LOCAL_MODE=false` and Stripe are active. Keep `/app` as the default UI until React reaches feature parity.
 
 ### Optional: OpenTelemetry / Logging
 
@@ -167,11 +181,12 @@ Set environment variables:
 ✅ **Production checklist** available in `docs/guides/QUICK_REFERENCE.md`
 
 ⚠️ **Before deploying:**
-1. Replace placeholder secrets in `.env` (see `env.template`)
-2. Purge demo data from `out/chunks.jsonl`
-3. Configure real Stripe keys + webhook endpoint
-4. Set up PostgreSQL with pgvector extension
-5. Review `docker-compose.yml` secret validation
+1. Replace placeholder secrets in `.env` (SECRET_KEY, Google OAuth, OpenAI, Stripe, Redis)
+2. Purge demo data from `out/chunks.jsonl` or point `CHUNKS_PATH` at real tenant data
+3. Configure real Stripe keys + webhook endpoint (or disable billing entirely)
+4. Set up PostgreSQL with pgvector extension and run `db_schema.sql`
+5. Review `docker-compose.yml` / Railway variables so `ALLOW_INSECURE_DEFAULTS=false`
+6. Turn off `LOCAL_MODE` once OAuth is verified end-to-end
 
 For detailed security analysis:
 - `docs/guides/QUICK_REFERENCE.md` - Production checklist

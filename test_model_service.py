@@ -13,12 +13,20 @@ import asyncio
 import os
 import sys
 from typing import List
+import pytest
 
 from model_service import Message
 from model_service_impl import ConcreteModelService
 from model_config import get_registry
 
 
+@pytest.fixture
+def service():
+    """Provide ConcreteModelService instance for tests."""
+    return ConcreteModelService()
+
+
+@pytest.mark.asyncio
 async def test_generation(service: ConcreteModelService):
     """Test text generation with different profiles."""
     print("\n=== Testing Text Generation ===\n")
@@ -44,6 +52,7 @@ async def test_generation(service: ConcreteModelService):
             print(f"✗ {profile} failed: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_embeddings(service: ConcreteModelService):
     """Test embedding generation."""
     print("\n\n=== Testing Embeddings ===\n")
@@ -65,6 +74,7 @@ async def test_embeddings(service: ConcreteModelService):
         print(f"✗ Embedding failed: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_specific_model(service: ConcreteModelService):
     """Test generation with specific model ID."""
     print("\n\n=== Testing Specific Model Override ===\n")
@@ -85,6 +95,7 @@ async def test_specific_model(service: ConcreteModelService):
         print(f"✗ Specific model failed: {str(e)}")
 
 
+@pytest.mark.asyncio
 async def test_error_handling(service: ConcreteModelService):
     """Test error handling with invalid inputs."""
     print("\n\n=== Testing Error Handling ===\n")

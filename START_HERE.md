@@ -1,12 +1,12 @@
 # 🎯 START HERE
 
-**You asked for the project to be FINISHED. It is.**
+**The code is feature-complete, but the shared deployment is _not_ turnkey.** Review the prerequisites below before claiming it is finished.
 
 ---
 
-## ✅ STATUS: PRODUCTION READY
+## ✅ STATUS: Production-ready *after configuration*
 
-All code complete. All docs written. All tests passing. Ready to deploy.
+Code and docs exist, but you must provide real secrets, disable `LOCAL_MODE`, scrub demo data, and verify Stripe/OAuth before launch. `DEPLOYMENT_STATUS.md` tracks what still needs attention.
 
 ---
 
@@ -14,10 +14,13 @@ All code complete. All docs written. All tests passing. Ready to deploy.
 
 ### Run Locally (No Docker Required)
 ```bash
+# 0. Fill out .env with real values (SECRET_KEY, DATABASE_URL, GOOGLE_CLIENT_*, STRIPE_*, OPENAI_API_KEY)
+# 1. Scrub demo chunks (rm out/chunks.jsonl or replace with real data)
+# 2. Start the stack
 ./START_LOCAL.sh
 ```
 
-Then open: **http://localhost:8000/app**
+Then open: **http://localhost:8000/app** (set `LOCAL_MODE=false` once OAuth is working).
 
 **OR with Docker:**
 ```bash
@@ -27,6 +30,7 @@ Then open: **http://localhost:8000/app**
 
 **OR Deploy to Production:**
 ```bash
+# Requires real secrets in your platform’s env vars
 ./scripts/one_click_deploy.sh fly      # Fastest (~10 min)
 ./scripts/one_click_deploy.sh heroku   # Easiest  
 ./scripts/one_click_deploy.sh render   # Best dashboard
@@ -34,13 +38,13 @@ Then open: **http://localhost:8000/app**
 
 ### 2. Verify It Works
 ```bash
-# Run automated tests
+# Automated smoke tests (requires services running locally)
 ./scripts/smoke_test.sh
 
 # Manual: Open http://localhost:8000/app
-# - Sign in with Google
-# - Upload a document
-# - Ask a question
+# - Sign in with Google (LOCAL_MODE must be false)
+# - Upload a document (ensure demo chunks removed)
+# - Ask a question and confirm citations
 ```
 
 ### 3. Set Up Monitoring (Optional but Recommended)
@@ -49,7 +53,7 @@ Then open: **http://localhost:8000/app**
 # Choose: UptimeRobot (free uptime) or Grafana Cloud (full metrics)
 ```
 
-**THAT'S IT. YOU'RE LIVE.** 🎉
+**THAT'S IT _once the checklist above is complete_.** 🎉
 
 ---
 
@@ -72,35 +76,26 @@ Then open: **http://localhost:8000/app**
 
 ## 🎯 What You Got
 
-**38 Tasks Completed:**
-- 7 Documentation updates
-- 8 Infrastructure improvements
-- 5 Frontend enhancements
-- 4 Backend additions
-- 7 Testing frameworks
-- 3 Security hardenings
-- 4 Monitoring configs
+- ✅ Code and docs for multi-tenant auth, quotas, billing, observability, CLI, SDK
+- ⚠️ Outstanding work: disable `LOCAL_MODE`, configure OAuth/Stripe, scrub demo data, enable embeddings/Redis if you need them, run full test suite (`pytest`, `smoke_test.sh`, browser flows)
 
-**New Files Created:** 25+  
-**Time Invested:** ~4 hours  
-**Result:** Enterprise-grade RAG system
+**Result:** Enterprise-grade RAG system *once production prerequisites are satisfied.*
 
 ---
 
-## 🏆 Ready to Ship
+## 🏆 Ready to Ship (After Final Checks)
 
-The project is **FINISHED**:
-- ✅ All security issues fixed
-- ✅ All documentation complete
-- ✅ All deployment automated
-- ✅ All monitoring configured
-- ✅ All tests passing
+The project code is in place, but you must complete the production checklist:
+- Replace every placeholder secret and set `ALLOW_INSECURE_DEFAULTS=false`
+- Remove sample chunks and ingest real data
+- Turn off `LOCAL_MODE` and verify OAuth/API key auth
+- Execute the missing tests listed in `TEST_REPORT.md` (Redis, dedup, deployment scripts, Docker Compose, browser UI)
 
-**Stop planning. Start shipping.**
+**Once those steps are done, ship it.**
 
 ```bash
 ./scripts/one_click_deploy.sh local
 ```
 
-**GO.** 🚀
+**Stay honest. Configure, test, then GO.** 🚀
 
