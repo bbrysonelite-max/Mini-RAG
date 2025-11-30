@@ -70,6 +70,43 @@ curl http://localhost:8000/health
 
 Then open your browser to `http://localhost:8000/app/`
 
+### Simple Local Mode (No DB, OpenAI Only)
+Use this path when you just want the LLM pipeline working locally without Docker, Postgres, or auth.
+
+```bash
+cd /Users/brentbryson/Desktop/mini-rag
+source venv/bin/activate
+unset DATABASE_URL ANTHROPIC_API_KEY MINI_RAG_API_KEY REDIS_URL
+LOCAL_MODE=true ALLOW_INSECURE_DEFAULTS=true OPENAI_API_KEY="sk-your-key" \
+python -m uvicorn server:app --reload --port 9000
+```
+
+Upload documents from `/app → Ingest` or run:
+
+```bash
+python raglite.py ingest-docs --path uploads/your_file.txt
+```
+
+After uploading, generate embeddings so hybrid search (BM25 + vectors) is active:
+
+```bash
+python - <<'PY'
+import asyncio
+from rag_pipeline import RAGPipeline
+from model_service_impl import ConcreteModelService
+
+pipeline = RAGPipeline(
+    chunks_path="out/chunks.jsonl",
+    model_service=ConcreteModelService(),
+    use_pgvector=False
+)
+result = asyncio.run(pipeline.build_vector_index(batch_size=50))
+print(f"Embedded {result['chunks_embedded']} chunks")
+PY
+```
+
+Restart uvicorn and ask questions at `http://localhost:9000/app`.
+
 ### Running with Docker
 
 ```bash

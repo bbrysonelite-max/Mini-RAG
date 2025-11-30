@@ -60,10 +60,20 @@
 - **Production:** Update Railway env vars to enable LLM path in deployed app
 
 ### ⚠️ Vector Embeddings (BM25 Only in Production)
-- Semantic search requires running embedding generation job
-- Local dev ready; production needs embedding workflow triggered
-- **Impact:** BM25-only retrieval (still accurate, just keyword-based)
-- **Fix:** Run embedding job once with valid OpenAI key
+- Semantic search requires running the embedding job after uploads
+- Local dev: confirmed `python rag_pipeline.py ... build_vector_index` embeds documents (see README for command)
+- **Impact:** Production still BM25-only until embeddings run on Railway (needs OPENAI_API_KEY + background job)
+- **Fix:** SSH into deploy or use `railway run` to execute:
+  ```
+  python - <<'PY'
+  import asyncio
+  from rag_pipeline import RAGPipeline
+  from model_service_impl import ConcreteModelService
+  pipeline = RAGPipeline(chunks_path="out/chunks.jsonl", model_service=ConcreteModelService(), use_pgvector=False)
+  result = asyncio.run(pipeline.build_vector_index(batch_size=50))
+  print(f"Embedded {result['chunks_embedded']} chunks")
+  PY
+  ```
 
 ### ❌ Redis Caching
 - Every query hits OpenAI API
