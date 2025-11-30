@@ -53,19 +53,19 @@ done
 
 echo "Pushing required variables to Railway..."
 for var in "${required_vars[@]}"; do
-  railway variables set "$var=${!var}"
+  railway variables --set "$var=${!var}"
 done
 
 echo "Pushing optional variables (if set)..."
 for var in "${optional_vars[@]}"; do
   if [ -n "${!var:-}" ]; then
-    railway variables set "$var=${!var}"
+    railway variables --set "$var=${!var}"
   fi
 done
 
 echo "Setting deployment toggles..."
-railway variables set LOCAL_MODE=false
-railway variables set ALLOW_INSECURE_DEFAULTS=false
+railway variables --set LOCAL_MODE=false
+railway variables --set ALLOW_INSECURE_DEFAULTS=false
 
 echo "✅ Railway env updated. Redeploy to apply changes."
 
