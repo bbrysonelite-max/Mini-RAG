@@ -97,6 +97,9 @@ MODEL_SERVICE = None
 RAG_PIPELINE: Optional[RAGPipeline] = None
 _chunk_count_cache: Optional[int] = None
 _chunk_count_stamp: Optional[float] = None
+# Thread-safe lock for INDEX and CHUNKS updates
+import threading
+_index_lock = threading.RLock()
 try:
     RAG_MAX_TOKENS = int(os.getenv("RAG_MAX_TOKENS", "512"))
 except ValueError:
@@ -140,8 +143,11 @@ def _get_vector_store() -> Optional["VectorStore"]:
     if VECTOR_STORE_INSTANCE is None:
         try:
             VECTOR_STORE_INSTANCE = VectorStore(DB)
+        except (ImportError, AttributeError) as exc:
+            logging.getLogger(__name__).warning("Vector store unavailable (missing dependencies): %s", exc)
+            VECTOR_STORE_INSTANCE = None
         except Exception as exc:
-            logging.getLogger(__name__).warning("Vector store unavailable: %s", exc)
+            logging.getLogger(__name__).error("Vector store initialization failed: %s", exc, exc_info=True)
             VECTOR_STORE_INSTANCE = None
     return VECTOR_STORE_INSTANCE
 
@@ -169,9 +175,13 @@ async def _persist_chunks_to_db() -> None:
             for idx, chunk in enumerate(CHUNKS)
         ]
         await store.ensure_chunks(entries, context)
+    except (ConnectionError, TimeoutError) as exc:
+        logging.getLogger(__name__).warning("Chunk persistence skipped (database connection error): %s", exc)
     except Exception as exc:
         if allow_insecure_defaults():
             logging.getLogger(__name__).warning("Chunk persistence skipped: %s", exc)
+        else:
+            logging.getLogger(__name__).error("Chunk persistence failed: %s", exc, exc_info=True)
         else:
             logging.getLogger(__name__).exception("Chunk persistence failed")
             raise
@@ -865,9 +875,19 @@ class IngestURLRequest(BaseModel):
     
     @validator('urls')
     def validate_urls(cls, v):
+        import re
         lines = [u.strip() for u in v.splitlines() if u.strip()]
         if len(lines) > 100:
             raise ValueError('Maximum 100 URLs per request')
+        
+        # Validate YouTube URL format
+        youtube_pattern = re.compile(
+            r'^https?://(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w-]+',
+            re.IGNORECASE
+        )
+        for url in lines:
+            if not youtube_pattern.match(url):
+                raise ValueError(f'Invalid YouTube URL format: {url}. Must be youtube.com/watch?v=... or youtu.be/...')
         return v
 
 
@@ -997,9 +1017,10 @@ async def startup_event():
                 chunks_from_db = await store.fetch_all_chunks()
                 if chunks_from_db:
                     global INDEX, CHUNKS, CHUNK_ID_MAP
-                    CHUNKS = chunks_from_db
-                    CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
-                    INDEX = SimpleIndex(CHUNKS)
+                    with _index_lock:
+                        CHUNKS = chunks_from_db
+                        CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                        INDEX = SimpleIndex(CHUNKS)
                     logger.info(f"Loaded {len(CHUNKS)} chunks from database")
         except Exception as e:
             logger.warning(f"Failed to load from database: {e}")
@@ -1094,48 +1115,47 @@ def ensure_index(require: bool = True):
                  If False, gracefully handle empty state (for startup).
     """
     global INDEX, CHUNKS, CHUNK_ID_MAP
-    if INDEX is None:
-        # Try loading from file first
-        if not os.path.exists(CHUNKS_PATH):
-            # File doesn't exist - try loading from database
-            # Note: Database loading happens in startup_event() async handler
-            # This sync function will skip DB loading and let startup handle it
-            pass
-            
-            # Neither file nor database has chunks
-            if require:
-                logger.error(f"Index not found at {CHUNKS_PATH} and no chunks in database")
-                raise IndexNotFoundError("Index not found. Please ingest documents first.")
-            else:
-                logger.warning(f"No chunks file at {CHUNKS_PATH} and no database chunks - starting with empty index")
-                CHUNKS = []
-                INDEX = SimpleIndex([])
-                return
-        try:
-            CHUNKS = load_chunks(CHUNKS_PATH)
-            CHUNK_ID_MAP = {
-                chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
-            }
-        except Exception as e:
-            logger.error(f"Failed to load chunks: {e}", exc_info=True)
-            if require:
-                raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
-            else:
-                CHUNKS = []
-                INDEX = SimpleIndex([])
-                return
-        if not CHUNKS:
-            if require:
-                raise IndexNotFoundError("Index is empty. Please ingest documents first.")
-            else:
-                logger.warning("Chunks file is empty - starting with empty index")
-                INDEX = SimpleIndex([])
-                return
-        try:
-            INDEX = SimpleIndex(CHUNKS)
-            logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
-            _refresh_rag_pipeline_index()
-        except Exception as e:
+    with _index_lock:
+        if INDEX is None:
+            # Try loading from file first
+            if not os.path.exists(CHUNKS_PATH):
+                # File doesn't exist - try loading from database
+                # Note: Database loading happens in startup_event() async handler
+                # This sync function will skip DB loading and let startup handle it
+                # Neither file nor database has chunks
+                if require:
+                    logger.error(f"Index not found at {CHUNKS_PATH} and no chunks in database")
+                    raise IndexNotFoundError("Index not found. Please ingest documents first.")
+                else:
+                    logger.warning(f"No chunks file at {CHUNKS_PATH} and no database chunks - starting with empty index")
+                    CHUNKS = []
+                    INDEX = SimpleIndex([])
+                    return
+            try:
+                CHUNKS = load_chunks(CHUNKS_PATH)
+                CHUNK_ID_MAP = {
+                    chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
+                }
+            except Exception as e:
+                logger.error(f"Failed to load chunks: {e}", exc_info=True)
+                if require:
+                    raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
+                else:
+                    CHUNKS = []
+                    INDEX = SimpleIndex([])
+                    return
+            if not CHUNKS:
+                if require:
+                    raise IndexNotFoundError("Index is empty. Please ingest documents first.")
+                else:
+                    logger.warning("Chunks file is empty - starting with empty index")
+                    INDEX = SimpleIndex([])
+                    return
+            try:
+                INDEX = SimpleIndex(CHUNKS)
+                logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
+                _refresh_rag_pipeline_index()
+            except Exception as e:
             logger.error(f"Failed to build index: {e}", exc_info=True)
             if require:
                 raise IndexNotFoundError("Failed to build search index.")
@@ -1364,16 +1384,35 @@ async def logout():
     return response
 
 @app.post("/auth/login")
+@limiter.limit("5/minute")  # Rate limit login attempts
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """
     Login with username and password.
     Returns JWT token in cookie.
+    Rate limited to 5 attempts per minute to prevent brute force attacks.
     """
+    # Validate input
+    if not username or not username.strip():
+        raise HTTPException(status_code=400, detail="Username is required")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required")
+    
+    username = username.strip()
+    
+    # Password length check (basic validation)
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    
     if not USER_SERVICE:
         raise HTTPException(status_code=503, detail="User service not available. Database not configured.")
     
     # Get user by username
-    user = await USER_SERVICE.get_user_by_username(username)
+    try:
+        user = await USER_SERVICE.get_user_by_username(username)
+    except Exception as exc:
+        logger.error(f"Database error during login: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Authentication service temporarily unavailable")
+    
     if not user:
         # Don't reveal if username exists (security)
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -1387,8 +1426,12 @@ async def login(request: Request, username: str = Form(...), password: str = For
     if not password_hash:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     
-    if not USER_SERVICE.verify_password(password, password_hash):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    try:
+        if not USER_SERVICE.verify_password(password, password_hash):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+    except Exception as exc:
+        logger.error(f"Password verification error: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Authentication failed")
     
     # Create JWT token
     from auth import create_access_token
@@ -1895,9 +1938,14 @@ async def _ingest_urls_core(
                             user_id=user_id,
                             workspace_id=workspace_id
                         )
-                except Exception:
+                except (subprocess.SubprocessError, FileNotFoundError) as exc:
+                    logger.error(f"YouTube transcript extraction failed: {exc}")
                     fallback_outcome = "failure"
-                    raise
+                    raise HTTPException(status_code=500, detail=f"Failed to extract transcript: {exc}") from exc
+                except Exception as exc:
+                    logger.error(f"Unexpected error during YouTube ingestion: {exc}", exc_info=True)
+                    fallback_outcome = "failure"
+                    raise HTTPException(status_code=500, detail="Failed to process YouTube video") from exc
                 finally:
                     INGEST_LATENCY.labels(
                         source="youtube",
