@@ -434,6 +434,7 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.5rem;
   font-size: 0.85rem;
   color: var(--text-muted);
 }
@@ -446,6 +447,44 @@ button:disabled {
 
 .chunk-footer a:hover {
   text-decoration: underline;
+}
+
+.button-outline.small {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.conversation-history {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-panel);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+}
+
+.conversation-item {
+  padding: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  border-left: 3px solid var(--accent);
+  padding-left: var(--space-md);
+}
+
+.conversation-question {
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.conversation-answer {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.refinement-actions {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-strong);
+  display: flex;
+  gap: var(--space-sm);
 }
 
 .error {
