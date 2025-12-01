@@ -186,9 +186,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     index_version INTEGER NOT NULL DEFAULT 1,
 
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-    
-    -- Full-text search column removed - using functional index instead
-    -- text_search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
 );
 
 -- Vector embeddings table (using pgvector)
