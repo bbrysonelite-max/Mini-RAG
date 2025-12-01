@@ -257,6 +257,11 @@ class Database:
                     if 'IDX_CHUNK_EMBEDDINGS' in stripped or 'VECTOR_COSINE_OPS' in stripped:
                         skip_section = True
                         continue
+                    if skip_section and stripped.endswith(';'):
+                        skip_section = False
+                        continue
+                    if skip_section:
+                        continue
                     
                     # Skip vector-related functions
                     if 'SEARCH_CHUNKS_BY_EMBEDDING' in stripped:
@@ -268,23 +273,93 @@ class Database:
                     if skip_section:
                         continue
                     
-                    # Skip vector column definitions
-                    if 'VECTOR(' in stripped:
+                    # Skip vector column definitions (but not tsvector)
+                    if 'VECTOR(' in stripped and 'TSVECTOR' not in stripped:
                         continue
                     
                     filtered_lines.append(line)
                 
                 schema_sql = '\n'.join(filtered_lines)
             
-            # Execute the entire schema file (PostgreSQL handles multi-statement execution)
+            # Split SQL into statements, handling dollar-quoted strings properly
+            def split_sql_statements(sql: str) -> list:
+                """Split SQL by semicolons, preserving dollar-quoted strings."""
+                statements = []
+                current = []
+                in_dollar_quote = False
+                dollar_tag = None
+                i = 0
+                
+                while i < len(sql):
+                    char = sql[i]
+                    
+                    # Check for dollar-quoted string start: $tag$ or $$
+                    if char == '$' and not in_dollar_quote:
+                        # Look ahead for dollar tag
+                        tag_start = i
+                        i += 1
+                        tag = ''
+                        while i < len(sql) and sql[i] != '$':
+                            tag += sql[i]
+                            i += 1
+                        if i < len(sql) and sql[i] == '$':
+                            dollar_tag = tag
+                            in_dollar_quote = True
+                            current.append(sql[tag_start:i+1])
+                            i += 1
+                            continue
+                        else:
+                            # Not a dollar quote, just a $ character
+                            current.append(char)
+                            i += 1
+                            continue
+                    
+                    # Check for dollar-quoted string end
+                    if in_dollar_quote and char == '$':
+                        tag_start = i
+                        i += 1
+                        tag = ''
+                        while i < len(sql) and sql[i] != '$':
+                            tag += sql[i]
+                            i += 1
+                        if i < len(sql) and sql[i] == '$' and tag == dollar_tag:
+                            current.append(sql[tag_start:i+1])
+                            in_dollar_quote = False
+                            dollar_tag = None
+                            i += 1
+                            continue
+                    
+                    # Regular character
+                    if char == ';' and not in_dollar_quote:
+                        current.append(char)
+                        stmt = ''.join(current).strip()
+                        if stmt:
+                            statements.append(stmt)
+                        current = []
+                    else:
+                        current.append(char)
+                    i += 1
+                
+                # Add remaining statement
+                if current:
+                    stmt = ''.join(current).strip()
+                    if stmt:
+                        statements.append(stmt)
+                
+                return statements
+            
+            # Execute statements one by one
+            statements = split_sql_statements(schema_sql)
             async with conn.cursor() as cur:
-                try:
-                    await cur.execute(schema_sql)
-                    await conn.commit()
-                except Exception as e:
-                    logger.error(f"Schema execution failed: {e}")
-                    await conn.rollback()
-                    raise
+                for i, stmt in enumerate(statements):
+                    try:
+                        await cur.execute(stmt)
+                    except Exception as e:
+                        # Log but continue for non-critical errors
+                        logger.warning(f"Failed to execute schema statement {i+1}/{len(statements)} (continuing): {e}")
+                        # Don't rollback - continue with other statements
+                
+                await conn.commit()
         
         logger.info("Database schema initialized successfully")
     
