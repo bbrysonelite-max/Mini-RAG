@@ -185,10 +185,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     ttl_expires_at TIMESTAMP WITH TIME ZONE,
     index_version INTEGER NOT NULL DEFAULT 1,
 
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     
-    -- Full-text search
-    text_search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+    -- Full-text search column removed - using functional index instead
+    -- text_search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
 );
 
 -- Vector embeddings table (using pgvector)
@@ -289,7 +289,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_project_id ON chunks(project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_organization_id ON chunks(organization_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_workspace_id ON chunks(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_tags ON chunks USING GIN(tags);
-CREATE INDEX IF NOT EXISTS idx_chunks_text_search ON chunks USING GIN(text_search_vector);
+-- Full-text search index (commented out - using functional index in queries instead)
+-- CREATE INDEX IF NOT EXISTS idx_chunks_text_search ON chunks USING GIN(text_search_vector);
 
 -- Vector similarity search index (HNSW for fast approximate nearest neighbor)
 CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_vector 
