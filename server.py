@@ -971,6 +971,22 @@ async def startup_event():
         configure_api_key_auth(None)
         QUOTA_SERVICE = None
         BILLING_SERVICE = None
+    # Try loading chunks from database before falling back to file
+    if DB and VECTOR_STORE_AVAILABLE and not os.path.exists(CHUNKS_PATH):
+        try:
+            store = _get_vector_store()
+            if store:
+                logger.info("Loading chunks from database (file not found)")
+                chunks_from_db = await store.fetch_all_chunks()
+                if chunks_from_db:
+                    global INDEX, CHUNKS, CHUNK_ID_MAP
+                    CHUNKS = chunks_from_db
+                    CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                    INDEX = SimpleIndex(CHUNKS)
+                    logger.info(f"Loaded {len(CHUNKS)} chunks from database")
+        except Exception as e:
+            logger.warning(f"Failed to load from database: {e}")
+
     asyncio.create_task(_warm_and_measure())
 
     if INDEX is None or not CHUNKS:
@@ -1065,22 +1081,9 @@ def ensure_index(require: bool = True):
         # Try loading from file first
         if not os.path.exists(CHUNKS_PATH):
             # File doesn't exist - try loading from database
-            if DB and VECTOR_STORE_AVAILABLE:
-                try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    store = _get_vector_store()
-                    if store:
-                        logger.info("Loading chunks from database (file not found)")
-                        chunks_from_db = loop.run_until_complete(store.fetch_all_chunks())
-                        if chunks_from_db:
-                            CHUNKS = chunks_from_db
-                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
-                            INDEX = SimpleIndex(CHUNKS)
-                            logger.info(f"Loaded {len(CHUNKS)} chunks from database")
-                            return
-                except Exception as e:
-                    logger.warning(f"Failed to load from database: {e}")
+            # Note: Database loading happens in startup_event() async handler
+            # This sync function will skip DB loading and let startup handle it
+            pass
             
             # Neither file nor database has chunks
             if require:
