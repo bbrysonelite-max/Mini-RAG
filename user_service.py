@@ -8,6 +8,12 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from database import Database
 
+try:
+    import bcrypt
+    BCRYPT_AVAILABLE = True
+except ImportError:
+    BCRYPT_AVAILABLE = False
+
 logger = logging.getLogger("rag")
 
 
@@ -109,12 +115,51 @@ class UserService:
             User record or None if not found
         """
         query = """
-            SELECT id, email, name, role, created_at, updated_at
+            SELECT id, email, username, name, role, password_hash, auth_method, created_at, updated_at
             FROM users
             WHERE email = $1
         """
         user = await self.db.fetch_one(query, email)
         return dict(user) if user else None
+    
+    async def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """
+        Get user by username.
+        
+        Args:
+            username: User's username
+        
+        Returns:
+            User record or None if not found
+        """
+        query = """
+            SELECT id, email, username, name, role, password_hash, auth_method, created_at, updated_at
+            FROM users
+            WHERE username = $1
+        """
+        user = await self.db.fetch_one(query, username)
+        return dict(user) if user else None
+    
+    def verify_password(self, password: str, password_hash: str) -> bool:
+        """
+        Verify a password against a hash.
+        
+        Args:
+            password: Plain text password
+            password_hash: Bcrypt hash from database
+        
+        Returns:
+            True if password matches, False otherwise
+        """
+        if not BCRYPT_AVAILABLE:
+            logger.error("bcrypt not available - password verification disabled")
+            return False
+        
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"Password verification failed: {e}")
+            return False
     
     async def update_user_role(self, user_id: str, role: str) -> Optional[Dict[str, Any]]:
         """

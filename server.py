@@ -591,6 +591,23 @@ async def _resolve_auth_context(
         return user, workspace_id, api_key_principal
 
     user = get_current_user(request)
+    
+    # If user has user_id from token, fetch full user record from database
+    if user and user.get("user_id") and USER_SERVICE:
+        try:
+            db_user = await USER_SERVICE.get_user_by_id(user["user_id"])
+            if db_user:
+                # Merge database user data with token data
+                user = {
+                    **user,
+                    "email": db_user.get("email") or user.get("email"),
+                    "username": db_user.get("username") or user.get("username"),
+                    "name": db_user.get("name") or user.get("name"),
+                    "role": db_user.get("role") or user.get("role", "reader"),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load user from database: {e}")
+    
     if require and not user:
         # LOCAL_MODE bypass: allow unauthenticated access for development
         if LOCAL_MODE:
@@ -604,7 +621,7 @@ async def _resolve_auth_context(
         else:
             raise HTTPException(
                 status_code=401,
-                detail="Authentication required. Supply an API key or sign in via Google OAuth.",
+                detail="Authentication required. Supply an API key, sign in via Google OAuth, or use username/password login.",
             )
     workspace_id = await _get_primary_workspace_id_for_user(user)
     organization_id = await _get_organization_id_for_workspace(workspace_id)
@@ -1344,6 +1361,65 @@ async def logout():
     """Logout user by clearing cookie."""
     response = RedirectResponse(url="/app/")
     response.delete_cookie("access_token")
+    return response
+
+@app.post("/auth/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    """
+    Login with username and password.
+    Returns JWT token in cookie.
+    """
+    if not USER_SERVICE:
+        raise HTTPException(status_code=503, detail="User service not available. Database not configured.")
+    
+    # Get user by username
+    user = await USER_SERVICE.get_user_by_username(username)
+    if not user:
+        # Don't reveal if username exists (security)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Check auth method
+    if user.get('auth_method') != 'password':
+        raise HTTPException(status_code=401, detail="This account uses OAuth login, not password")
+    
+    # Verify password
+    password_hash = user.get('password_hash')
+    if not password_hash:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    if not USER_SERVICE.verify_password(password, password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Create JWT token
+    from auth import create_access_token
+    jwt_payload = {
+        "username": user['username'],
+        "name": user['name'],
+        "user_id": str(user['id']),
+        "role": user['role'],
+        "auth_method": "password"
+    }
+    
+    jwt_token = create_access_token(jwt_payload)
+    
+    # Set cookie and return
+    response = JSONResponse({
+        "access_token": jwt_token,
+        "user": {
+            "id": str(user['id']),
+            "username": user['username'],
+            "name": user['name'],
+            "role": user['role']
+        }
+    })
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7  # 7 days
+    )
     return response
 
 @app.get("/auth/me")

@@ -7,11 +7,15 @@
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    username VARCHAR(255) UNIQUE,
     name VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255), -- bcrypt hashed password for username/password auth
+    auth_method VARCHAR(50) NOT NULL DEFAULT 'oauth', -- 'oauth' or 'password'
     role VARCHAR(50) NOT NULL DEFAULT 'reader', -- owner, admin, editor, reader
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT users_email_or_username CHECK (email IS NOT NULL OR username IS NOT NULL)
 );
 
 -- API Keys table (hashed storage)

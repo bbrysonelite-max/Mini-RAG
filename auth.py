@@ -78,11 +78,13 @@ def get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
         return None
     return {
         "email": payload.get("email"),
+        "username": payload.get("username"),  # For password auth
         "name": payload.get("name"),
         "picture": payload.get("picture"),
         "sub": payload.get("sub"),
         "user_id": payload.get("user_id"),  # UUID from database
-        "role": payload.get("role", "reader")  # Default to reader
+        "role": payload.get("role", "reader"),  # Default to reader
+        "auth_method": payload.get("auth_method", "oauth")  # oauth or password
     }
 
 
