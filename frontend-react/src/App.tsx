@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AdminPanel } from './components/AdminPanel';
 import { AskPanel } from './components/AskPanel';
 import { IngestPanel } from './components/IngestPanel';
 import { SourcesPanel } from './components/SourcesPanel';
+import { LoginForm } from './components/LoginForm';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import HelpWidget from './components/HelpWidget';
@@ -11,6 +12,19 @@ type View = 'ask' | 'sources' | 'ingest' | 'admin';
 
 function App() {
   const [view, setView] = useState<View>('ask');
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // Check auth status
+    fetch('/auth/me')
+      .then(res => res.json())
+      .then(data => {
+        setAuthenticated(data.authenticated === true);
+      })
+      .catch(() => {
+        setAuthenticated(false);
+      });
+  }, []);
 
   const renderView = () => {
     switch (view) {
@@ -25,6 +39,18 @@ function App() {
         return <AskPanel />;
     }
   };
+
+  // Show login form if not authenticated (and not in LOCAL_MODE)
+  if (authenticated === false) {
+    return (
+      <div className="app-shell">
+        <main style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+          <LoginForm onSuccess={() => setAuthenticated(true)} />
+        </main>
+        <Footer />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
