@@ -222,55 +222,53 @@ class Database:
         logger.info("Initializing database schema...")
         
         async with self.connection() as conn:
-            async with conn.cursor() as cur:
-                # Try to enable pgvector extension (may fail if not available)
-                try:
+            # Check pgvector availability first (in separate transaction)
+            has_pgvector = False
+            try:
+                async with conn.cursor() as cur:
                     await cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
                     await conn.commit()
+                    has_pgvector = True
                     logger.info("pgvector extension enabled")
-                except Exception as e:
-                    logger.warning(f"pgvector extension not available (this is OK if not using vector search): {e}")
-                    await conn.rollback()  # Rollback failed transaction
-                
-                # Execute schema SQL, but skip pgvector-dependent parts if extension failed
-                # Split schema into statements and execute them individually
+            except Exception as e:
+                logger.warning(f"pgvector extension not available (this is OK if not using vector search): {e}")
+                await conn.rollback()
+            
+            # Execute schema SQL statement by statement
+            async with conn.cursor() as cur:
+                # Split schema into individual statements
                 statements = []
-                current_statement = []
+                current = []
                 
                 for line in schema_sql.split('\n'):
-                    # Skip commented CREATE EXTENSION line
-                    if 'CREATE EXTENSION IF NOT EXISTS vector' in line and line.strip().startswith('--'):
-                        continue
-                    # Skip actual CREATE EXTENSION if pgvector not available
-                    if 'CREATE EXTENSION IF NOT EXISTS vector' in line and not line.strip().startswith('--'):
+                    stripped = line.strip()
+                    # Skip comments and empty lines
+                    if not stripped or stripped.startswith('--'):
                         continue
                     
-                    current_statement.append(line)
+                    current.append(line)
+                    
                     # End of statement
-                    if line.strip().endswith(';'):
-                        stmt = '\n'.join(current_statement).strip()
-                        if stmt and not stmt.startswith('--'):
+                    if stripped.endswith(';'):
+                        stmt = '\n'.join(current).strip()
+                        if stmt:
                             statements.append(stmt)
-                        current_statement = []
+                        current = []
                 
                 # Execute each statement individually
                 for stmt in statements:
-                    try:
-                        # Skip vector-related table creation if pgvector not available
-                        if 'vector(' in stmt.upper() or 'chunk_embeddings' in stmt.lower():
-                            # Check if pgvector is available before creating vector tables
-                            has_pgvector = await self.check_pgvector()
-                            if not has_pgvector:
-                                logger.debug("Skipping vector table creation (pgvector not available)")
-                                continue
-                        await cur.execute(stmt)
-                    except Exception as e:
-                        logger.warning(f"Failed to execute schema statement: {e}")
-                        await conn.rollback()
-                        # Continue with next statement
+                    # Skip vector-related statements if pgvector not available
+                    if not has_pgvector and ('vector(' in stmt.upper() or 'chunk_embeddings' in stmt.lower() or 'CREATE EXTENSION' in stmt.upper()):
+                        logger.debug("Skipping vector-related statement (pgvector not available)")
                         continue
-                
-                await conn.commit()
+                    
+                    try:
+                        await cur.execute(stmt)
+                        await conn.commit()
+                    except Exception as e:
+                        logger.warning(f"Failed to execute schema statement (continuing): {e}")
+                        await conn.rollback()
+                        continue
         
         logger.info("Database schema initialized successfully")
     
