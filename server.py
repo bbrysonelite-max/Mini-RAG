@@ -2122,6 +2122,64 @@ async def update_billing_status(organization_id: str, payload: BillingUpdate, re
     return {"organization": row}
 
 
+async def _dedupe_database_chunks() -> Dict[str, Any]:
+    """Remove duplicate chunks from database."""
+    if not DB or not VECTOR_STORE_AVAILABLE:
+        return {"kept": 0, "total_before": 0, "removed": 0, "database": False}
+    
+    try:
+        # Count duplicates
+        duplicate_count = await DB.fetch_one(
+            """
+            SELECT COUNT(*) - COUNT(DISTINCT (document_id, text, position)) as duplicates
+            FROM chunks
+            """
+        )
+        dupes = duplicate_count['duplicates'] if duplicate_count else 0
+        
+        if dupes == 0:
+            return {"kept": 0, "total_before": 0, "removed": 0, "database": True, "duplicates": 0}
+        
+        # Get total before
+        total_before = await DB.fetch_one("SELECT COUNT(*) as count FROM chunks")
+        count_before = total_before['count'] if total_before else 0
+        
+        # Remove duplicates, keeping oldest (lowest created_at)
+        await DB.execute(
+            """
+            DELETE FROM chunks
+            WHERE id IN (
+                SELECT id
+                FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY document_id, text, position 
+                               ORDER BY created_at ASC
+                           ) as rn
+                    FROM chunks
+                ) t
+                WHERE rn > 1
+            )
+            """
+        )
+        
+        # Get total after
+        total_after = await DB.fetch_one("SELECT COUNT(*) as count FROM chunks")
+        count_after = total_after['count'] if total_after else 0
+        removed = count_before - count_after
+        
+        return {
+            "kept": count_after,
+            "total_before": count_before,
+            "removed": removed,
+            "database": True,
+            "duplicates": dupes
+        }
+    except Exception as e:
+        logger.error(f"Database deduplication failed: {e}", exc_info=True)
+        return {"kept": 0, "total_before": 0, "removed": 0, "database": True, "error": str(e)}
+
+
 def _dedupe_chunks_sync() -> Dict[str, Any]:
     inp = CHUNKS_PATH
     tmp = CHUNKS_PATH + ".tmp"
@@ -2172,7 +2230,29 @@ def _dedupe_chunks_sync() -> Dict[str, Any]:
 
 
 async def _run_dedupe_job() -> Dict[str, Any]:
-    return await asyncio.to_thread(_dedupe_chunks_sync)
+    """Run deduplication on both files and database."""
+    results = {}
+    
+    # Dedupe database if available
+    if DB and VECTOR_STORE_AVAILABLE:
+        db_result = await _dedupe_database_chunks()
+        results["database"] = db_result
+    
+    # Dedupe files
+    file_result = await asyncio.to_thread(_dedupe_chunks_sync)
+    results["files"] = file_result
+    
+    # Combine results
+    total_before = file_result.get("total_before", 0) + results.get("database", {}).get("total_before", 0)
+    total_kept = file_result.get("kept", 0) + results.get("database", {}).get("kept", 0)
+    total_removed = results.get("database", {}).get("removed", 0)
+    
+    return {
+        **results,
+        "total_before": total_before,
+        "total_kept": total_kept,
+        "total_removed": total_removed
+    }
 
 
 @app.post("/api/dedupe")

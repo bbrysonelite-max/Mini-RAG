@@ -248,6 +248,24 @@ class VectorStore:
                 continue
 
             try:
+                # Check for duplicate content first (deduplication)
+                existing = await self.db.fetch_one(
+                    """
+                    SELECT id FROM chunks 
+                    WHERE document_id = %s 
+                      AND text = %s 
+                      AND position = %s
+                    LIMIT 1
+                    """,
+                    (context["document_id"], text, position)
+                )
+                
+                if existing:
+                    # Chunk with same content already exists - skip (deduplication)
+                    logger.debug(f"Duplicate chunk detected (same text+position), skipping: {chunk_id}")
+                    success_count += 1  # Count as success (deduplication working)
+                    continue
+                
                 await self.db.execute(
                     """
                     INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position, start_offset, end_offset)
