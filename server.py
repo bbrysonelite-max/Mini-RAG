@@ -935,7 +935,7 @@ async def startup_event():
     db_url = os.environ.get("DATABASE_URL")
     if db_url and DATABASE_AVAILABLE:
         try:
-            DB = await init_database(db_url, init_schema=False)
+            DB = await init_database(db_url, init_schema=True)
             USER_SERVICE = get_user_service(DB)
             API_KEY_SERVICE = ApiKeyService(DB)
             QUOTA_SERVICE = QuotaService(DB, metrics_hook=_quota_metrics_hook)
