@@ -185,16 +185,25 @@ async def _persist_chunks_to_db() -> None:
             raise
 
 
-# CORS
-_cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
+# CORS Configuration
+# In production, set CORS_ALLOW_ORIGINS to specific domains (comma-separated)
+# Example: CORS_ALLOW_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
+_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*")
+if _cors_origins_env == "*" and not allow_insecure_defaults():
+    logger.warning(
+        "CORS_ALLOW_ORIGINS is set to '*' in production. "
+        "Set CORS_ALLOW_ORIGINS to specific domains for security."
+    )
+_cors_origins = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 if not _cors_origins:
     _cors_origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 
@@ -529,9 +538,15 @@ async def _ping_healthchecks(success: bool, payload: Dict[str, Any]) -> None:
             await client.post(url, json=payload, headers=headers)
         if success:
             _log_event("healthcheck.ping_sent", url=url, status="ok")
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        _log_event("healthcheck.ping_failed", url=url, error=f"Connection error: {exc}")
+        logger.warning("Failed to ping health monitor (connection error): %s", exc)
+    except httpx.HTTPStatusError as exc:
+        _log_event("healthcheck.ping_failed", url=url, error=f"HTTP {exc.response.status_code}")
+        logger.warning("Health monitor returned error status: %s", exc.response.status_code)
     except Exception as exc:
         _log_event("healthcheck.ping_failed", url=url, error=str(exc))
-        logger.warning("Failed to ping health monitor: %s", exc)
+        logger.error("Failed to ping health monitor: %s", exc, exc_info=True)
 
 async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> Optional[str]:
     """Resolve the user's default workspace ID, if multi-tenant support is enabled."""
@@ -543,8 +558,11 @@ async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> 
     try:
         workspace = await USER_SERVICE.get_primary_workspace(user_id)
         return workspace.get("id") if workspace else None
+    except (ConnectionError, TimeoutError) as exc:
+        logger.warning(f"Database connection error resolving workspace for user {user_id}: {exc}")
+        return None
     except Exception as exc:
-        logger.warning(f"Unable to resolve primary workspace for user {user_id}: {exc}")
+        logger.error(f"Unable to resolve primary workspace for user {user_id}: {exc}", exc_info=True)
         return None
 
 
@@ -575,12 +593,20 @@ async def _resolve_auth_context(
         if USER_SERVICE:
             try:
                 user = await USER_SERVICE.get_user_by_id(api_key_principal.user_id)
-            except Exception as exc:
+            except (ConnectionError, TimeoutError) as exc:
                 logger.warning(
+                    "Database connection error loading user %s for API key %s: %s",
+                    api_key_principal.user_id,
+                    api_key_principal.key_id,
+                    exc,
+                )
+            except Exception as exc:
+                logger.error(
                     "Failed to load user %s for API key %s: %s",
                     api_key_principal.user_id,
                     api_key_principal.key_id,
                     exc,
+                    exc_info=True
                 )
         if not user:
             user = {
@@ -613,8 +639,10 @@ async def _resolve_auth_context(
                     "name": db_user.get("name") or user.get("name"),
                     "role": db_user.get("role") or user.get("role", "reader"),
                 }
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"Database connection error loading user: {e}")
         except Exception as e:
-            logger.warning(f"Failed to load user from database: {e}")
+            logger.error(f"Failed to load user from database: {e}", exc_info=True)
     
     if require and not user:
         # LOCAL_MODE bypass: allow unauthenticated access for development
@@ -748,9 +776,15 @@ async def _warm_search_index() -> None:
     start = time.perf_counter()
     try:
         await asyncio.to_thread(ensure_index)
+    except IndexNotFoundError as exc:
+        _log_event("index.warm_failed", error=f"Index not found: {exc}")
+        logger.warning("Index warmup skipped (no index): %s", exc)
+    except (FileNotFoundError, PermissionError) as exc:
+        _log_event("index.warm_failed", error=f"File error: {exc}")
+        logger.warning("Index warmup failed (file error): %s", exc)
     except Exception as exc:
         _log_event("index.warm_failed", error=str(exc))
-        logger.warning("Index warmup failed: %s", exc)
+        logger.error("Index warmup failed: %s", exc, exc_info=True)
     else:
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
         _log_event(
@@ -1220,8 +1254,11 @@ async def health_check():
             try:
                 await DB.fetch_one("SELECT 1")
                 db_status = "healthy"
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"Database health check failed (connection error): {e}")
+                db_status = "unhealthy"
             except Exception as e:
-                logger.error(f"Database health check failed: {e}")
+                logger.error(f"Database health check failed: {e}", exc_info=True)
                 db_status = "unhealthy"
         
         response = {
@@ -2611,6 +2648,102 @@ async def list_users(request: Request):
     users = await USER_SERVICE.list_all_users()
     return {"users": users, "count": len(users)}
 api_v1.get("/admin/users")(list_users)
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=255, description="Username")
+    password: str = Field(..., min_length=8, description="Password (min 8 characters)")
+    name: str = Field(..., min_length=1, max_length=255, description="Full name")
+    role: str = Field("reader", description="User role")
+    
+    @validator('role')
+    def validate_role(cls, v):
+        allowed = {'admin', 'editor', 'reader', 'owner'}
+        if v not in allowed:
+            raise ValueError(f'Role must be one of: {", ".join(allowed)}')
+        return v
+
+@app.post("/api/admin/users")
+async def create_user(request: Request, payload: CreateUserRequest):
+    """Create a new user (admin only)."""
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("admin",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
+    
+    if not USER_SERVICE:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. User management requires database connection."
+        )
+    
+    try:
+        import bcrypt
+        password_hash = bcrypt.hashpw(payload.password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
+        
+        new_user = await USER_SERVICE.db.fetch_one(
+            """
+            INSERT INTO users (username, name, password_hash, auth_method, role)
+            VALUES ($1, $2, $3, 'password', $4)
+            RETURNING id, username, name, role, auth_method, created_at
+            """,
+            (payload.username, payload.name, password_hash, payload.role)
+        )
+        
+        if not new_user:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+        
+        return {"user": dict(new_user), "message": "User created successfully"}
+    except Exception as e:
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            raise HTTPException(status_code=400, detail=f"Username '{payload.username}' already exists")
+        logger.error(f"Failed to create user: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create user")
+api_v1.post("/admin/users")(create_user)
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user(request: Request, user_id: str):
+    """Delete a user (admin only)."""
+    user, _, api_key_principal = await _resolve_auth_context(
+        request,
+        scopes=("admin",),
+        require=True,
+    )
+    require_admin(user, api_key_principal)
+    
+    if not USER_SERVICE:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. User management requires database connection."
+        )
+    
+    # Prevent deleting yourself
+    if user.get("user_id") == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    
+    # Prevent deleting last admin
+    try:
+        user_to_delete = await USER_SERVICE.get_user_by_id(user_id)
+        if user_to_delete and user_to_delete.get("role") == "admin":
+            admin_count = await USER_SERVICE.db.fetch_one(
+                "SELECT COUNT(*) as count FROM users WHERE role = 'admin'"
+            )
+            if admin_count and admin_count.get("count", 0) <= 1:
+                raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+        
+        await USER_SERVICE.db.execute(
+            "DELETE FROM users WHERE id = $1",
+            (user_id,)
+        )
+        
+        return {"message": "User deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete user: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete user")
+api_v1.delete("/admin/users/{user_id}")(delete_user)
 
 @app.patch("/api/admin/users/{user_id}/role")
 async def update_user_role(request: Request, user_id: str, role: str = Form(...)):

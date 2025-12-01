@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import type { WorkspaceSummary } from '../types';
+import { UserManagement } from './UserManagement';
 
 export const AdminPanel = () => {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'workspaces' | 'users'>('workspaces');
 
   useEffect(() => {
     const load = async () => {
@@ -39,11 +41,31 @@ export const AdminPanel = () => {
   return (
     <section>
       <h2>Admin</h2>
-      {loading && <p className="small">Loading tenant data…</p>}
-      {!loading && workspaces.length === 0 ? (
-        <div className="empty-state">No workspace data available or insufficient permissions.</div>
-      ) : (
-        <table className="table">
+      
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-strong)' }}>
+        <button
+          onClick={() => setActiveTab('workspaces')}
+          className={activeTab === 'workspaces' ? 'button-primary' : 'button-outline'}
+          style={{ borderBottom: 'none', borderRadius: '8px 8px 0 0' }}
+        >
+          Workspaces
+        </button>
+        <button
+          onClick={() => setActiveTab('users')}
+          className={activeTab === 'users' ? 'button-primary' : 'button-outline'}
+          style={{ borderBottom: 'none', borderRadius: '8px 8px 0 0' }}
+        >
+          Users
+        </button>
+      </div>
+
+      {activeTab === 'workspaces' && (
+        <>
+          {loading && <p className="small">Loading tenant data…</p>}
+          {!loading && workspaces.length === 0 ? (
+            <div className="empty-state">No workspace data available or insufficient permissions.</div>
+          ) : (
+            <table className="table">
           <thead>
             <tr>
               <th>Workspace</th>
@@ -62,8 +84,12 @@ export const AdminPanel = () => {
               </tr>
             ))}
           </tbody>
-        </table>
+            </table>
+          )}
+        </>
       )}
+
+      {activeTab === 'users' && <UserManagement />}
     </section>
   );
 };
