@@ -223,6 +223,14 @@ class Database:
         
         async with self.connection() as conn:
             async with conn.cursor() as cur:
+                # Try to enable pgvector extension (may fail if not available)
+                try:
+                    await cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                    logger.info("pgvector extension enabled")
+                except Exception as e:
+                    logger.warning(f"pgvector extension not available (this is OK if not using vector search): {e}")
+                
+                # Execute schema SQL
                 await cur.execute(schema_sql)
                 await conn.commit()
         
