@@ -1,8 +1,8 @@
 -- Database Schema for Multi-Agent RAG Brain
--- PostgreSQL with pgvector extension
+-- PostgreSQL with pgvector extension (optional)
 
--- Enable pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Enable pgvector extension (will be handled by database.py init_schema if available)
+-- CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
