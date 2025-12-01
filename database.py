@@ -234,41 +234,57 @@ class Database:
                 logger.warning(f"pgvector extension not available (this is OK if not using vector search): {e}")
                 await conn.rollback()
             
-            # Execute schema SQL statement by statement
+            # Filter out vector-related parts if pgvector not available
+            if not has_pgvector:
+                lines = schema_sql.split('\n')
+                filtered_lines = []
+                skip_section = False
+                
+                for i, line in enumerate(lines):
+                    stripped = line.strip().upper()
+                    
+                    # Skip chunk_embeddings table
+                    if 'CREATE TABLE' in stripped and 'CHUNK_EMBEDDINGS' in stripped:
+                        skip_section = True
+                        continue
+                    if skip_section and stripped.endswith(');'):
+                        skip_section = False
+                        continue
+                    if skip_section:
+                        continue
+                    
+                    # Skip vector-related indexes
+                    if 'IDX_CHUNK_EMBEDDINGS' in stripped or 'VECTOR_COSINE_OPS' in stripped:
+                        skip_section = True
+                        continue
+                    
+                    # Skip vector-related functions
+                    if 'SEARCH_CHUNKS_BY_EMBEDDING' in stripped:
+                        skip_section = True
+                        continue
+                    if skip_section and '$$ LANGUAGE' in stripped:
+                        skip_section = False
+                        continue
+                    if skip_section:
+                        continue
+                    
+                    # Skip vector column definitions
+                    if 'VECTOR(' in stripped:
+                        continue
+                    
+                    filtered_lines.append(line)
+                
+                schema_sql = '\n'.join(filtered_lines)
+            
+            # Execute the entire schema file (PostgreSQL handles multi-statement execution)
             async with conn.cursor() as cur:
-                # Split schema into individual statements
-                statements = []
-                current = []
-                
-                for line in schema_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comments and empty lines
-                    if not stripped or stripped.startswith('--'):
-                        continue
-                    
-                    current.append(line)
-                    
-                    # End of statement
-                    if stripped.endswith(';'):
-                        stmt = '\n'.join(current).strip()
-                        if stmt:
-                            statements.append(stmt)
-                        current = []
-                
-                # Execute each statement individually
-                for stmt in statements:
-                    # Skip vector-related statements if pgvector not available
-                    if not has_pgvector and ('vector(' in stmt.upper() or 'chunk_embeddings' in stmt.lower() or 'CREATE EXTENSION' in stmt.upper()):
-                        logger.debug("Skipping vector-related statement (pgvector not available)")
-                        continue
-                    
-                    try:
-                        await cur.execute(stmt)
-                        await conn.commit()
-                    except Exception as e:
-                        logger.warning(f"Failed to execute schema statement (continuing): {e}")
-                        await conn.rollback()
-                        continue
+                try:
+                    await cur.execute(schema_sql)
+                    await conn.commit()
+                except Exception as e:
+                    logger.error(f"Schema execution failed: {e}")
+                    await conn.rollback()
+                    raise
         
         logger.info("Database schema initialized successfully")
     
