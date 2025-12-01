@@ -177,6 +177,33 @@ class VectorStore:
         }
         return self._default_context
 
+    async def fetch_all_chunks(self) -> List[Dict[str, Any]]:
+        """Fetch all chunks from database in Mini-RAG format."""
+        rows = await self.db.fetch_all(
+            """
+            SELECT id, text, position, start_offset, end_offset, created_at
+            FROM chunks
+            ORDER BY created_at ASC
+            """
+        )
+        chunks = []
+        for row in rows:
+            chunk = {
+                "id": str(row["id"]),
+                "content": row["text"],
+                "source": {"type": "database", "path": "postgres"},
+                "metadata": {
+                    "chunk_index": row["position"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                }
+            }
+            if row["start_offset"] is not None:
+                chunk["metadata"]["start_sec"] = float(row["start_offset"])
+            if row["end_offset"] is not None:
+                chunk["metadata"]["end_sec"] = float(row["end_offset"])
+            chunks.append(chunk)
+        return chunks
+
     async def ensure_chunks(
         self,
         chunk_entries: List[Tuple[str, Dict[str, Any]]],

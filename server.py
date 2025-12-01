@@ -1062,12 +1062,32 @@ def ensure_index(require: bool = True):
     """
     global INDEX, CHUNKS, CHUNK_ID_MAP
     if INDEX is None:
+        # Try loading from file first
         if not os.path.exists(CHUNKS_PATH):
+            # File doesn't exist - try loading from database
+            if DB and VECTOR_STORE_AVAILABLE:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    store = _get_vector_store()
+                    if store:
+                        logger.info("Loading chunks from database (file not found)")
+                        chunks_from_db = loop.run_until_complete(store.fetch_all_chunks())
+                        if chunks_from_db:
+                            CHUNKS = chunks_from_db
+                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                            INDEX = SimpleIndex(CHUNKS)
+                            logger.info(f"Loaded {len(CHUNKS)} chunks from database")
+                            return
+                except Exception as e:
+                    logger.warning(f"Failed to load from database: {e}")
+            
+            # Neither file nor database has chunks
             if require:
-                logger.error(f"Index not found at {CHUNKS_PATH}")
+                logger.error(f"Index not found at {CHUNKS_PATH} and no chunks in database")
                 raise IndexNotFoundError("Index not found. Please ingest documents first.")
             else:
-                logger.warning(f"No chunks file at {CHUNKS_PATH} - starting with empty index")
+                logger.warning(f"No chunks file at {CHUNKS_PATH} and no database chunks - starting with empty index")
                 CHUNKS = []
                 INDEX = SimpleIndex([])
                 return
