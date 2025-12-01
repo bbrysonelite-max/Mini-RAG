@@ -182,8 +182,6 @@ async def _persist_chunks_to_db() -> None:
             logging.getLogger(__name__).warning("Chunk persistence skipped: %s", exc)
         else:
             logging.getLogger(__name__).error("Chunk persistence failed: %s", exc, exc_info=True)
-        else:
-            logging.getLogger(__name__).exception("Chunk persistence failed")
             raise
 
 
@@ -1156,11 +1154,11 @@ def ensure_index(require: bool = True):
                 logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
                 _refresh_rag_pipeline_index()
             except Exception as e:
-            logger.error(f"Failed to build index: {e}", exc_info=True)
-            if require:
-                raise IndexNotFoundError("Failed to build search index.")
-            else:
-                INDEX = SimpleIndex([])
+                logger.error(f"Failed to build index: {e}", exc_info=True)
+                if require:
+                    raise IndexNotFoundError("Failed to build search index.")
+                else:
+                    INDEX = SimpleIndex([])
 
 
 def _init_model_service():
