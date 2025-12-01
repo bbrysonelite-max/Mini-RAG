@@ -213,21 +213,50 @@ class VectorStore:
         if not chunk_entries:
             return
 
+        # Validate UUIDs before insertion
+        import uuid as uuid_lib
+        validated_entries = []
         for chunk_id, chunk in chunk_entries:
+            try:
+                # Ensure chunk_id is a valid UUID
+                if not isinstance(chunk_id, str):
+                    chunk_id = str(chunk_id)
+                # Validate UUID format
+                uuid_lib.UUID(chunk_id)
+                validated_entries.append((chunk_id, chunk))
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Invalid chunk_id format '{chunk_id}': {e}, skipping")
+                continue
+
+        if not validated_entries:
+            logger.warning("No valid chunk entries to insert")
+            return
+
+        success_count = 0
+        error_count = 0
+        errors = []
+
+        for chunk_id, chunk in validated_entries:
             metadata = chunk.get("metadata", {}) or {}
             position = metadata.get("chunk_index", 0)
             start_offset = metadata.get("start_sec")
             end_offset = metadata.get("end_sec")
             text = chunk.get("content", "")
 
+            if not text:
+                logger.warning(f"Chunk {chunk_id} has empty text, skipping")
+                continue
+
             try:
                 await self.db.execute(
                     """
                     INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position, start_offset, end_offset)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE
                     SET text = EXCLUDED.text,
-                        position = EXCLUDED.position
+                        position = EXCLUDED.position,
+                        start_offset = EXCLUDED.start_offset,
+                        end_offset = EXCLUDED.end_offset
                     """,
                     (
                         chunk_id,
@@ -241,9 +270,20 @@ class VectorStore:
                         end_offset,
                     ),
                 )
+                success_count += 1
             except Exception as exc:
-                logger.error(f"Failed to ensure chunk {chunk_id}: {exc}")
-                continue
+                error_count += 1
+                error_msg = f"Failed to ensure chunk {chunk_id}: {exc}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+
+        if error_count > 0:
+            logger.warning(f"Chunk persistence completed with {error_count} errors out of {len(validated_entries)} chunks")
+            if error_count == len(validated_entries):
+                # All failed - raise to surface the issue
+                raise RuntimeError(f"All chunk insertions failed. First error: {errors[0] if errors else 'Unknown'}")
+        else:
+            logger.info(f"Successfully persisted {success_count} chunks to database")
     
     async def insert_embedding(
         self,

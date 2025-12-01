@@ -1,0 +1,68 @@
+{"timestamp": "2025-11-24T17:40:13.773337Z", "level": "INFO", "logger": "rag", "message": "React frontend mounted at /app from /Users/brentbryson/Desktop/mini-rag/frontend-react/dist"}
+{"timestamp": "2025-11-24T17:40:13.775657Z", "level": "INFO", "logger": "rag", "message": "React assets mounted at /assets from /Users/brentbryson/Desktop/mini-rag/frontend-react/dist/assets"}
+{"timestamp": "2025-11-24T17:40:13.776219Z", "level": "INFO", "logger": "rag", "message": "Legacy frontend mounted at /app-legacy from /Users/brentbryson/Desktop/mini-rag/frontend"}
+{"timestamp": "2025-11-24T17:40:13.918869Z", "level": "WARNING", "logger": "rag.config", "message": "STRIPE_API_KEY is using a placeholder value; do not use this in production."}
+{"timestamp": "2025-11-24T17:40:13.919003Z", "level": "WARNING", "logger": "rag.config", "message": "STRIPE_WEBHOOK_SECRET is using a placeholder value; do not use this in production."}
+INFO:     Started server process [7824]
+INFO:     Waiting for application startup.
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+Failed to initialize database pool: couldn't get a connection after 30.00 sec
+{"timestamp": "2025-11-24T17:40:43.960628Z", "level": "WARNING", "logger": "rag", "message": "Failed to initialize database: couldn't get a connection after 30.00 sec"}
+{"timestamp": "2025-11-24T17:40:43.960799Z", "level": "WARNING", "logger": "rag", "message": "Server will run without database features"}
+{"timestamp": "2025-11-24T17:40:43.964162Z", "level": "INFO", "logger": "rag", "message": "Search index rebuilt", "chunks": 21}
+{"timestamp": "2025-11-24T17:40:43.964313Z", "level": "INFO", "logger": "rag", "message": "Background job queue started"}
+INFO:     Application startup complete.
+{"timestamp": "2025-11-24T17:40:43.965254Z", "level": "INFO", "logger": "rag", "message": "index.warm_completed", "event": "index.warm_completed", "duration_ms": 0.391, "chunk_count": 21}
+{"timestamp": "2025-11-24T17:40:43.965942Z", "level": "INFO", "logger": "rag.audit", "message": "index.warm_completed", "event": "index.warm_completed", "duration_ms": 0.391, "chunk_count": 21}
+{"timestamp": "2025-11-24T17:40:43.966073Z", "level": "INFO", "logger": "rag", "message": "Index warmup completed in 0.391ms (chunks=21)"}
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+{"timestamp": "2025-11-24T17:40:43.967045Z", "level": "INFO", "logger": "rag", "message": "ask.baseline_completed", "event": "ask.baseline_completed", "duration_ms": 0.773}
+{"timestamp": "2025-11-24T17:40:43.967212Z", "level": "INFO", "logger": "rag.audit", "message": "ask.baseline_completed", "event": "ask.baseline_completed", "duration_ms": 0.773}
+{"timestamp": "2025-11-24T17:40:43.967374Z", "level": "INFO", "logger": "rag", "message": "Baseline ask completed in 0.773ms"}
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+INFO:     127.0.0.1:59353 - "HEAD /assets/index-C4LVWfUS.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59366 - "GET /app/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59366 - "GET /assets/index-C4LVWfUS.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59368 - "GET /assets/index-CPRp4x8Y.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59366 - "GET /api/v1/admin/workspaces HTTP/1.1" 401 Unauthorized
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+INFO:     127.0.0.1:59371 - "GET /app/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59371 - "GET /assets/index-C4LVWfUS.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59373 - "GET /assets/index-CPRp4x8Y.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59373 - "GET /api/v1/admin/workspaces HTTP/1.1" 401 Unauthorized
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+reconnection attempt in pool 'pool-1' failed after 300.0 sec
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+reconnection attempt in pool 'pool-1' failed after 300.0 sec
+error connecting in 'pool-1': [Errno 8] nodename nor servname provided, or not known
+reconnection attempt in pool 'pool-1' failed after 300.0 sec
+INFO:     127.0.0.1:49258 - "GET /app/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49258 - "GET /assets/index-C4LVWfUS.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49260 - "GET /assets/index-CPRp4x8Y.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49260 - "GET /api/v1/admin/workspaces HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49265 - "GET /api/v1/admin/workspaces HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49265 - "GET /api/v1/sources HTTP/1.1" 401 Unauthorized
