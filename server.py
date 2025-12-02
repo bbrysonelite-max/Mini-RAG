@@ -2934,10 +2934,28 @@ async def list_workspaces_for_user(request: Request):
         raise HTTPException(status_code=503, detail="Database not configured.")
     
     user_id = user.get("user_id") if user else None
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User ID not found.")
-    
-    workspaces = await USER_SERVICE.list_user_workspaces(user_id)
+    # LOCAL_MODE: allow listing all workspaces even if the placeholder user has no UUID
+    if LOCAL_MODE and (not user_id or user_id == "local-dev-user"):
+        rows = await DB.fetch_all(
+            """
+            SELECT
+                id,
+                organization_id,
+                name,
+                slug,
+                description,
+                metadata,
+                created_at,
+                updated_at
+            FROM workspaces
+            ORDER BY created_at ASC
+            """
+        )
+        workspaces = [dict(row) for row in rows]
+    else:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found.")
+        workspaces = await USER_SERVICE.list_user_workspaces(user_id)
     
     # Load settings for each workspace
     for ws in workspaces:
