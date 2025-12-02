@@ -25,8 +25,8 @@ set +a
 # Simple mode: disable optional services for faster dev iteration
 export LOCAL_MODE=true
 export ALLOW_INSECURE_DEFAULTS=true
-unset DATABASE_URL ANTHROPIC_API_KEY MINI_RAG_API_KEY REDIS_URL
-# Keep OPENAI_API_KEY from .env so LLM pipeline works
+# Keep DATABASE_URL and OPENAI_API_KEY from .env
+unset ANTHROPIC_API_KEY MINI_RAG_API_KEY REDIS_URL
 
 echo "Environment loaded:"
 echo "  ✓ GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:0:20}..."

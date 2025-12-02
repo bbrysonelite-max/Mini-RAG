@@ -72,6 +72,24 @@ except ImportError as e:
 
 from config_utils import ensure_not_placeholder, allow_insecure_defaults
 
+# Engine configuration for Second Brain Phase I
+try:
+    from engine_config import load_engines_config, resolve_engine_for_workspace
+    ENGINE_CONFIG_AVAILABLE = True
+except ImportError:
+    ENGINE_CONFIG_AVAILABLE = False
+    load_engines_config = None
+    resolve_engine_for_workspace = None
+
+# Command handlers for Second Brain Phase I
+try:
+    from command_handlers import handle_command, COMMAND_HANDLERS
+    COMMAND_HANDLERS_AVAILABLE = True
+except ImportError:
+    COMMAND_HANDLERS_AVAILABLE = False
+    handle_command = None
+    COMMAND_HANDLERS = {}
+
 # Optional vector store for persistent chunk storage
 try:
     from vector_store import VectorStore
@@ -190,7 +208,7 @@ async def _persist_chunks_to_db() -> None:
 # Example: CORS_ALLOW_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
 _cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*")
 if _cors_origins_env == "*" and not allow_insecure_defaults():
-    logger.warning(
+    logging.getLogger(__name__).warning(
         "CORS_ALLOW_ORIGINS is set to '*' in production. "
         "Set CORS_ALLOW_ORIGINS to specific domains for security."
     )
@@ -1075,6 +1093,14 @@ async def startup_event():
 
     configure_logging()
     setup_tracing(app)
+    
+    # Load engine configuration for Second Brain Phase I
+    if ENGINE_CONFIG_AVAILABLE and load_engines_config:
+        try:
+            load_engines_config()
+            logging.getLogger(__name__).info("Engine configuration loaded successfully")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to load engine configuration: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1503,6 +1529,20 @@ async def login(request: Request, username: str = Form(...), password: str = For
 @app.get("/auth/me")
 async def get_me(request: Request):
     """Get current user information."""
+    # LOCAL_MODE bypass: return authenticated admin user
+    if LOCAL_MODE:
+        return {
+            "authenticated": True,
+            "user": {
+                "user_id": "local-dev-user",
+                "email": "local@localhost",
+                "name": "Local Developer",
+                "role": "admin",
+            },
+            "workspace_id": None,
+            "via_api_key": False,
+        }
+    
     user, workspace_id, api_key = await _resolve_auth_context(request, scopes=("read",), require=False)
     if user or api_key:
         return {
@@ -1521,7 +1561,7 @@ async def get_me(request: Request):
     tags=["Query"]
 )
 @limiter.limit("30/minute")
-async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
+async def ask(request: Request, query: str = Form(...), k: int = Form(8), command: Optional[str] = Form(None)):
     user, workspace_id, api_key_principal = await _resolve_auth_context(
         request,
         scopes=("read",),
@@ -1543,14 +1583,48 @@ async def ask(request: Request, query: str = Form(...), k: int = Form(8)):
     outcome = "success"
     status_code = 200
     try:
+        # Get workspace default_engine for command processing
+        workspace_default_engine = None
+        if workspace_id and DB:
+            try:
+                settings_row = await DB.fetch_one(
+                    "SELECT default_engine FROM workspace_settings WHERE workspace_id = $1",
+                    (workspace_id,)
+                )
+                workspace_default_engine = settings_row["default_engine"] if settings_row else "auto"
+            except Exception as e:
+                logger.warning(f"Failed to load workspace settings: {e}")
+                workspace_default_engine = "auto"
+        
         with RequestTimer(
             "ask",
-            {"user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
+            {"user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal), "command": command},
         ):
             result = await asyncio.wait_for(
-                _process_query_async(ask_req.query, ask_req.k, user, workspace_id),
+                _process_query_async(ask_req.query, ask_req.k, user, workspace_id, command=command, workspace_default_engine=workspace_default_engine),
                 timeout=30.0  # 30 second timeout
             )
+        
+        # Store history if command is provided and DB is available
+        if command and workspace_id and DB:
+            try:
+                answer_text = result.get("answer", "")[:500] if isinstance(result.get("answer"), str) else ""
+                await DB.execute(
+                    """
+                    INSERT INTO history (workspace_id, command, input_snippet, output_snippet, full_input, full_output)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    (
+                        workspace_id,
+                        command,
+                        query[:200],
+                        answer_text,
+                        query,
+                        result.get("answer", "") if isinstance(result.get("answer"), str) else ""
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to store history: {e}")
         _log_event(
             "ask.completed",
             user_id=user_id,
@@ -1590,12 +1664,24 @@ async def _process_query_async(
     k: int,
     user: Dict[str, Any],
     workspace_id: Optional[str] = None,
+    command: Optional[str] = None,
+    workspace_default_engine: Optional[str] = None,
 ):
     """Prefer the LLM pipeline when configured, but fall back to the legacy answer."""
     ensure_index()
+    
+    # If command is provided, use command handler to get system prompt
+    system_prompt_override = None
+    if command and COMMAND_HANDLERS_AVAILABLE and handle_command:
+        try:
+            context = {}  # Could include workspace documents/assets here
+            system_prompt_override = await handle_command(command, query, workspace_id, workspace_default_engine, context)
+        except Exception as e:
+            logger.warning(f"Command handler failed for '{command}': {e}")
+    
     if RAG_PIPELINE and MODEL_SERVICE:
         try:
-            return await _process_query_with_llm(query, k, user, workspace_id)
+            return await _process_query_with_llm(query, k, user, workspace_id, system_prompt=system_prompt_override)
         except Exception as exc:
             logger.warning("LLM pipeline failed, falling back to chunk mode: %s", exc, exc_info=True)
     return _process_query_legacy(query, k, user, workspace_id)
@@ -1606,6 +1692,7 @@ async def _process_query_with_llm(
     k: int,
     user: Dict[str, Any],
     workspace_id: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ):
     """Answer using RAGPipeline + the configured ModelService."""
     if not (RAG_PIPELINE and MODEL_SERVICE):
@@ -1655,15 +1742,33 @@ async def _process_query_with_llm(
         )
 
     context_text = "\n\n".join(context_sections)
-    user_prompt = (
-        "Use only the context below to answer the user's question. "
-        "If the context does not contain the answer, reply with \"I don't have enough information.\""
-        f"\n\nContext:\n{context_text}\n\nQuestion:\n{query}"
-    )
-    messages: List[Message] = [
-        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
+    
+    # Use command-specific system prompt if provided, otherwise use default
+    effective_system_prompt = system_prompt if system_prompt else DEFAULT_SYSTEM_PROMPT
+    
+    # If system prompt is provided and non-empty, use it; otherwise use default behavior
+    if system_prompt:
+        # Command handlers return system prompts - use them directly
+        user_prompt = (
+            f"{effective_system_prompt}\n\n"
+            f"Use the context below to help answer:\n\n"
+            f"Context:\n{context_text}\n\n"
+            f"User's request:\n{query}"
+        )
+        messages: List[Message] = [
+            {"role": "user", "content": user_prompt},
+        ]
+    else:
+        # Default RAG behavior
+        user_prompt = (
+            "Use only the context below to answer the user's question. "
+            "If the context does not contain the answer, reply with \"I don't have enough information.\""
+            f"\n\nContext:\n{context_text}\n\nQuestion:\n{query}"
+        )
+        messages: List[Message] = [
+            {"role": "system", "content": effective_system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
     generate_opts: GenerateOptions = {
         "messages": messages,
         "modelProfile": RAG_MODEL_PROFILE,
@@ -2806,6 +2911,692 @@ async def admin_stats(request: Request):
         "auth_available": AUTH_AVAILABLE
     }
 api_v1.get("/admin/stats")(admin_stats)
+
+# ============================================================================
+# Second Brain Phase I: Workspace Management Endpoints
+# ============================================================================
+
+@api_v1.get("/workspaces")
+async def list_workspaces_for_user(request: Request):
+    """List workspaces for the current user."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None or USER_SERVICE is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found.")
+    
+    workspaces = await USER_SERVICE.list_user_workspaces(user_id)
+    
+    # Load settings for each workspace
+    for ws in workspaces:
+        ws_id = ws.get("id")
+        if ws_id:
+            settings_row = await DB.fetch_one(
+                "SELECT default_engine FROM workspace_settings WHERE workspace_id = $1",
+                (ws_id,)
+            )
+            ws["default_engine"] = settings_row["default_engine"] if settings_row else "auto"
+    
+    return {"workspaces": workspaces}
+
+
+@api_v1.post("/workspaces")
+async def create_workspace(request: Request):
+    """Create a new workspace."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None or USER_SERVICE is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found.")
+    
+    # Get user's organization
+    orgs = await USER_SERVICE.list_user_organizations(user_id)
+    if not orgs:
+        raise HTTPException(status_code=400, detail="User must belong to an organization.")
+    org_id = orgs[0].get("organization_id")
+    
+    body = await request.json()
+    name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    default_engine = body.get("default_engine", "auto")
+    
+    if not name:
+        raise HTTPException(status_code=400, detail="Workspace name is required.")
+    
+    # Generate slug from name
+    import re
+    slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    
+    # Create workspace
+    workspace_row = await DB.fetch_one(
+        """
+        INSERT INTO workspaces (organization_id, name, slug, description)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, name, slug, description, created_at, updated_at
+        """,
+        (org_id, name, slug, description)
+    )
+    
+    workspace_id = workspace_row["id"]
+    
+    # Add user as owner
+    await DB.execute(
+        """
+        INSERT INTO workspace_members (workspace_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'owner'
+        """,
+        (workspace_id, user_id)
+    )
+    
+    # Create workspace settings
+    await DB.execute(
+        """
+        INSERT INTO workspace_settings (workspace_id, default_engine)
+        VALUES ($1, $2)
+        ON CONFLICT (workspace_id) DO UPDATE SET default_engine = $2, updated_at = NOW()
+        """,
+        (workspace_id, default_engine)
+    )
+    
+    workspace = dict(workspace_row)
+    workspace["default_engine"] = default_engine
+    
+    return {"workspace": workspace}
+
+
+@api_v1.get("/workspaces/{workspace_id}")
+async def get_workspace(request: Request, workspace_id: str):
+    """Get workspace details."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Check workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT w.*, wm.role
+        FROM workspaces w
+        JOIN workspace_members wm ON wm.workspace_id = w.id
+        WHERE w.id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    workspace = dict(membership)
+    
+    # Load settings
+    settings_row = await DB.fetch_one(
+        "SELECT default_engine FROM workspace_settings WHERE workspace_id = $1",
+        (workspace_id,)
+    )
+    workspace["default_engine"] = settings_row["default_engine"] if settings_row else "auto"
+    
+    return {"workspace": workspace}
+
+
+@api_v1.patch("/workspaces/{workspace_id}")
+async def update_workspace(request: Request, workspace_id: str):
+    """Update workspace (name, description, settings)."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Check workspace membership and role
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    role = membership.get("role")
+    if role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only owners and admins can update workspace.")
+    
+    body = await request.json()
+    updates = []
+    params = []
+    param_idx = 1
+    
+    if "name" in body:
+        name = body["name"].strip()
+        if name:
+            updates.append(f"name = ${param_idx}")
+            params.append(name)
+            param_idx += 1
+    
+    if "description" in body:
+        updates.append(f"description = ${param_idx}")
+        params.append(body["description"])
+        param_idx += 1
+    
+    if updates:
+        updates.append("updated_at = NOW()")
+        params.append(workspace_id)
+        await DB.execute(
+            f"UPDATE workspaces SET {', '.join(updates)} WHERE id = ${param_idx}",
+            tuple(params)
+        )
+    
+    # Update settings if provided
+    if "default_engine" in body:
+        default_engine = body["default_engine"]
+        await DB.execute(
+            """
+            INSERT INTO workspace_settings (workspace_id, default_engine, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (workspace_id) DO UPDATE SET default_engine = $2, updated_at = NOW()
+            """,
+            (workspace_id, default_engine)
+        )
+    
+    # Return updated workspace
+    return await get_workspace(request, workspace_id)
+
+
+@api_v1.post("/workspaces/{workspace_id}/switch")
+async def switch_workspace(request: Request, workspace_id: str):
+    """Set current workspace (stores in session/cookie)."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    # For now, just return success (frontend will track current workspace)
+    # In future, could store in session/cookie
+    return {"workspace_id": workspace_id, "switched": True}
+
+
+# ============================================================================
+# Second Brain Phase I: Assets Management Endpoints
+# ============================================================================
+
+@api_v1.get("/workspaces/{workspace_id}/assets")
+async def list_assets(request: Request, workspace_id: str, type: Optional[str] = None, search: Optional[str] = None):
+    """List assets for a workspace with optional filters."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    # Build query
+    query = """
+        SELECT id, workspace_id, type, title, content, tags, created_at, updated_at
+        FROM assets
+        WHERE workspace_id = $1
+    """
+    params = [workspace_id]
+    param_idx = 2
+    
+    if type:
+        query += f" AND type = ${param_idx}"
+        params.append(type)
+        param_idx += 1
+    
+    if search:
+        query += f" AND (title ILIKE ${param_idx} OR content ILIKE ${param_idx})"
+        search_pattern = f"%{search}%"
+        params.extend([search_pattern, search_pattern])
+        param_idx += 2
+    
+    query += " ORDER BY created_at DESC"
+    
+    rows = await DB.fetch_all(query, tuple(params))
+    return {"assets": [dict(row) for row in rows]}
+
+
+@api_v1.post("/workspaces/{workspace_id}/assets")
+async def create_asset(request: Request, workspace_id: str):
+    """Create a new asset."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    body = await request.json()
+    asset_type = body.get("type", "").strip()
+    title = body.get("title", "").strip()
+    content = body.get("content", "").strip()
+    tags = body.get("tags", [])
+    
+    if not asset_type or not title or not content:
+        raise HTTPException(status_code=400, detail="type, title, and content are required.")
+    
+    valid_types = ["prompt", "workflow", "page", "sequence", "decision", "expert_instructions", "customer_avatar", "document"]
+    if asset_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(valid_types)}")
+    
+    # Create asset
+    asset_row = await DB.fetch_one(
+        """
+        INSERT INTO assets (workspace_id, type, title, content, tags)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, workspace_id, type, title, content, tags, created_at, updated_at
+        """,
+        (workspace_id, asset_type, title, content, tags)
+    )
+    
+    return {"asset": dict(asset_row)}
+
+
+@api_v1.get("/assets/{asset_id}")
+async def get_asset(request: Request, asset_id: str):
+    """Get asset details."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Get asset and verify workspace membership
+    asset_row = await DB.fetch_one(
+        """
+        SELECT a.*
+        FROM assets a
+        JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
+        WHERE a.id = $1 AND wm.user_id = $2
+        """,
+        (asset_id, user_id)
+    )
+    
+    if not asset_row:
+        raise HTTPException(status_code=404, detail="Asset not found or access denied.")
+    
+    return {"asset": dict(asset_row)}
+
+
+@api_v1.patch("/assets/{asset_id}")
+async def update_asset(request: Request, asset_id: str):
+    """Update an asset."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify asset ownership via workspace membership
+    asset_row = await DB.fetch_one(
+        """
+        SELECT a.*
+        FROM assets a
+        JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
+        WHERE a.id = $1 AND wm.user_id = $2
+        """,
+        (asset_id, user_id)
+    )
+    
+    if not asset_row:
+        raise HTTPException(status_code=404, detail="Asset not found or access denied.")
+    
+    body = await request.json()
+    updates = []
+    params = []
+    param_idx = 1
+    
+    if "title" in body:
+        updates.append(f"title = ${param_idx}")
+        params.append(body["title"])
+        param_idx += 1
+    
+    if "content" in body:
+        updates.append(f"content = ${param_idx}")
+        params.append(body["content"])
+        param_idx += 1
+    
+    if "tags" in body:
+        updates.append(f"tags = ${param_idx}")
+        params.append(body["tags"])
+        param_idx += 1
+    
+    if updates:
+        updates.append("updated_at = NOW()")
+        params.append(asset_id)
+        await DB.execute(
+            f"UPDATE assets SET {', '.join(updates)} WHERE id = ${param_idx}",
+            tuple(params)
+        )
+    
+    # Return updated asset
+    return await get_asset(request, asset_id)
+
+
+@api_v1.delete("/assets/{asset_id}")
+async def delete_asset(request: Request, asset_id: str):
+    """Delete an asset."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify asset ownership via workspace membership
+    asset_row = await DB.fetch_one(
+        """
+        SELECT a.*
+        FROM assets a
+        JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
+        WHERE a.id = $1 AND wm.user_id = $2
+        """,
+        (asset_id, user_id)
+    )
+    
+    if not asset_row:
+        raise HTTPException(status_code=404, detail="Asset not found or access denied.")
+    
+    await DB.execute("DELETE FROM assets WHERE id = $1", (asset_id,))
+    
+    return {"deleted": True, "asset_id": asset_id}
+
+
+@api_v1.post("/assets/{asset_id}/export")
+async def export_asset(request: Request, asset_id: str):
+    """Export asset as TXT, MD, or PDF."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Get asset
+    asset_row = await DB.fetch_one(
+        """
+        SELECT a.*
+        FROM assets a
+        JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
+        WHERE a.id = $1 AND wm.user_id = $2
+        """,
+        (asset_id, user_id)
+    )
+    
+    if not asset_row:
+        raise HTTPException(status_code=404, detail="Asset not found or access denied.")
+    
+    asset = dict(asset_row)
+    body = await request.json()
+    format_type = body.get("format", "txt").lower()
+    
+    if format_type not in ["txt", "md", "pdf"]:
+        raise HTTPException(status_code=400, detail="format must be txt, md, or pdf")
+    
+    content = asset["content"]
+    title = asset["title"]
+    
+    if format_type == "txt":
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(content, headers={"Content-Disposition": f'attachment; filename="{title}.txt"'})
+    elif format_type == "md":
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{title}.md"'}
+        )
+    else:  # PDF
+        # For PDF, we'd need a library like reportlab or weasyprint
+        # For now, return error suggesting to use txt or md
+        raise HTTPException(status_code=501, detail="PDF export not yet implemented. Use txt or md format.")
+
+
+# ============================================================================
+# Second Brain Phase I: History Endpoints
+# ============================================================================
+
+@api_v1.get("/workspaces/{workspace_id}/history")
+async def list_history(request: Request, workspace_id: str, limit: int = 50):
+    """List history entries for a workspace."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    rows = await DB.fetch_all(
+        """
+        SELECT id, workspace_id, command, input_snippet, output_snippet, created_at
+        FROM history
+        WHERE workspace_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        (workspace_id, limit)
+    )
+    
+    return {"history": [dict(row) for row in rows]}
+
+
+@api_v1.get("/history/{history_id}")
+async def get_history_entry(request: Request, history_id: str):
+    """Get full history entry."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Get history entry and verify workspace membership
+    history_row = await DB.fetch_one(
+        """
+        SELECT h.*
+        FROM history h
+        JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
+        WHERE h.id = $1 AND wm.user_id = $2
+        """,
+        (history_id, user_id)
+    )
+    
+    if not history_row:
+        raise HTTPException(status_code=404, detail="History entry not found or access denied.")
+    
+    return {"history": dict(history_row)}
+
+
+# ============================================================================
+# Second Brain Phase I: Document Onboarding Endpoints
+# ============================================================================
+
+@api_v1.post("/workspaces/{workspace_id}/documents/paste")
+async def paste_document(request: Request, workspace_id: str):
+    """Paste text content as a document for the workspace."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Verify workspace membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    
+    await _require_billing_active(workspace_id)
+    
+    body = await request.json()
+    title = body.get("title", "").strip()
+    content = body.get("content", "").strip()
+    
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="Title and content are required.")
+    
+    # Create a temporary file and ingest it using existing ingestion logic
+    import tempfile
+    import os
+    from raglite import ingest_docs
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+        f.write(content)
+        temp_path = f.name
+    
+    try:
+        # Use existing synchronous ingestion function
+        result = ingest_docs(
+            path=temp_path,
+            out_jsonl=CHUNKS_PATH,
+            language="en",
+            user_id=user_id,
+            workspace_id=workspace_id
+        )
+        
+        chunks_added = result.get("written", 0)
+        
+        # Rebuild index
+        global INDEX, CHUNKS
+        INDEX = None
+        CHUNKS = []
+        ensure_index(require=False)
+        
+        # Persist to database if available
+        if chunks_added > 0:
+            await _persist_chunks_to_db()
+        
+        return {
+            "message": f"Document '{title}' ingested successfully",
+            "chunks_added": chunks_added,
+            "title": title
+        }
+    finally:
+        # Clean up temp file
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception:
+            pass
+
+
+@api_v1.post("/history/{history_id}/save-asset")
+async def save_history_as_asset(request: Request, history_id: str):
+    """Save history output as an asset."""
+    user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    
+    user_id = user.get("user_id") if user else None
+    
+    # Get history entry and verify workspace membership
+    history_row = await DB.fetch_one(
+        """
+        SELECT h.*
+        FROM history h
+        JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
+        WHERE h.id = $1 AND wm.user_id = $2
+        """,
+        (history_id, user_id)
+    )
+    
+    if not history_row:
+        raise HTTPException(status_code=404, detail="History entry not found or access denied.")
+    
+    history = dict(history_row)
+    body = await request.json()
+    
+    # Determine asset type from command
+    command_to_type = {
+        "build_prompt": "prompt",
+        "build_workflow": "workflow",
+        "landing_page": "page",
+        "email_sequence": "sequence",
+        "content_batch": "document",
+        "decision_record": "decision",
+        "build_expert_instructions": "expert_instructions",
+        "build_customer_avatar": "customer_avatar",
+    }
+    asset_type = command_to_type.get(history["command"], "document")
+    
+    title = body.get("title", f"{history['command']} - {history['created_at']}")
+    content = history.get("full_output", history.get("output_snippet", ""))
+    tags = body.get("tags", [history["command"], "from_history"])
+    
+    # Create asset
+    asset_row = await DB.fetch_one(
+        """
+        INSERT INTO assets (workspace_id, type, title, content, tags)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, workspace_id, type, title, content, tags, created_at, updated_at
+        """,
+        (history["workspace_id"], asset_type, title, content, tags)
+    )
+    
+    return {"asset": dict(asset_row)}
+
 
 @api_v1.get("/admin/audit")
 async def list_audit_events(request: Request, limit: int = 100):

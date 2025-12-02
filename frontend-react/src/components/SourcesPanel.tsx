@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { Source } from '../types';
 
-export const SourcesPanel = () => {
+interface SourcesPanelProps {
+  workspaceId?: string;
+}
+
+export const SourcesPanel = ({ workspaceId }: SourcesPanelProps) => {
   const [sources, setSources] = useState<Source[]>([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);

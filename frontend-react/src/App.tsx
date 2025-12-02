@@ -3,16 +3,19 @@ import { AdminPanel } from './components/AdminPanel';
 import { AskPanel } from './components/AskPanel';
 import { IngestPanel } from './components/IngestPanel';
 import { SourcesPanel } from './components/SourcesPanel';
+import { AssetsPanel } from './components/AssetsPanel';
+import { HistoryPanel } from './components/HistoryPanel';
 import { LoginForm } from './components/LoginForm';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import HelpWidget from './components/HelpWidget';
 
-type View = 'ask' | 'sources' | 'ingest' | 'admin';
+type View = 'ask' | 'sources' | 'ingest' | 'admin' | 'assets' | 'history';
 
 function App() {
   const [view, setView] = useState<View>('ask');
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [currentWorkspace, setCurrentWorkspace] = useState<string>('');
 
   useEffect(() => {
     // Check auth status
@@ -29,14 +32,18 @@ function App() {
   const renderView = () => {
     switch (view) {
       case 'sources':
-        return <SourcesPanel />;
+        return <SourcesPanel workspaceId={currentWorkspace} />;
       case 'ingest':
-        return <IngestPanel />;
+        return <IngestPanel workspaceId={currentWorkspace} />;
       case 'admin':
         return <AdminPanel />;
+      case 'assets':
+        return <AssetsPanel workspaceId={currentWorkspace} />;
+      case 'history':
+        return <HistoryPanel workspaceId={currentWorkspace} />;
       case 'ask':
       default:
-        return <AskPanel />;
+        return <AskPanel workspaceId={currentWorkspace} />;
     }
   };
 
@@ -54,7 +61,12 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Header active={view} onNavigate={setView} />
+      <Header 
+        active={view} 
+        onNavigate={setView}
+        currentWorkspace={currentWorkspace}
+        onWorkspaceChange={setCurrentWorkspace}
+      />
       <main>{renderView()}</main>
       <Footer />
       <HelpWidget position="bottom-right" />

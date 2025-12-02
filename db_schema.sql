@@ -367,4 +367,45 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Workspace settings (Phase I: Second Brain)
+CREATE TABLE IF NOT EXISTS workspace_settings (
+    workspace_id UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    default_engine VARCHAR(100) NOT NULL DEFAULT 'auto',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Assets table (Phase I: Second Brain)
+CREATE TABLE IF NOT EXISTS assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL, -- prompt, workflow, page, sequence, decision, expert_instructions, customer_avatar, document
+    title VARCHAR(500) NOT NULL,
+    content TEXT NOT NULL,
+    tags TEXT[] DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- History table (Phase I: Second Brain)
+CREATE TABLE IF NOT EXISTS history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    command VARCHAR(100) NOT NULL,
+    input_snippet TEXT,
+    output_snippet TEXT,
+    full_input TEXT,
+    full_output TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Indexes for Phase I tables
+CREATE INDEX IF NOT EXISTS idx_assets_workspace_id ON assets(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
+CREATE INDEX IF NOT EXISTS idx_assets_tags ON assets USING GIN(tags);
+
+CREATE INDEX IF NOT EXISTS idx_history_workspace_id ON history(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_command ON history(command);
+
 
