@@ -20,3 +20,4 @@ After redeploy, check that chunks are still accessible.
 ## Expected Result
 ✅ Chunks should persist because they're stored in PostgreSQL (persistent), not in ephemeral container filesystem.
 
+

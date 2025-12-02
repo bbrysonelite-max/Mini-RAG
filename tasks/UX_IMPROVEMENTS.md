@@ -132,3 +132,4 @@ const maxRefinementLevel = 3;
 - [ ] Conversation context is maintained across refinements
 - [ ] UI feels smooth and intuitive
 
+

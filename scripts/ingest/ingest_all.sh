@@ -51,7 +51,7 @@ while IFS= read -r item || [[ -n "${item:-}" ]]; do
           echo ">> document:  $item"
           python raglite.py ingest-docs --path "$item" --out "$OUT"
           ;;
-        *)
+        *)https://mini-rag-production.up.railway.app/app/#ingest
           echo "?? unsupported file: $item"
           ;;
       esac

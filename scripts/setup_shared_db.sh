@@ -189,3 +189,4 @@ echo "  3. Start the server: ./START_LOCAL.sh"
 echo ""
 print_success "Setup complete!"
 
+

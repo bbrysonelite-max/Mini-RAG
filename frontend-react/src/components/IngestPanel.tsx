@@ -1,4 +1,6 @@
 import { useState, useRef } from 'react';
+import { LoadingSpinner } from './LoadingSpinner';
+import { ErrorMessage } from './ErrorMessage';
 
 interface IngestPanelProps {
   workspaceId?: string;
@@ -10,16 +12,19 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
   const [pastedText, setPastedText] = useState('');
   const [pastedTextTitle, setPastedTextTitle] = useState('');
   const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const ingestUrls = async () => {
     if (!urls.trim()) {
-      setStatus('Add at least one URL.');
+      setError('Add at least one URL.');
       return;
     }
     setStatus(null);
+    setError(null);
     setLoading(true);
     setProgress(0);
     const body = new FormData();
@@ -35,7 +40,7 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
       setStatus(`✅ Ingested ${data.total_written ?? 0} chunks from ${data.results?.length ?? 0} URL(s).`);
       setUrls('');
     } catch (err) {
-      setStatus(`❌ ${(err as Error).message}`);
+      setError((err as Error).message);
     } finally {
       setLoading(false);
       setTimeout(() => setProgress(0), 2000);
@@ -44,10 +49,11 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
 
   const ingestFiles = async () => {
     if (files.length === 0) {
-      setStatus('Select files first.');
+      setError('Select files first.');
       return;
     }
     setStatus(null);
+    setError(null);
     setLoading(true);
     setProgress(30);
     const body = new FormData();
@@ -64,15 +70,26 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err) {
-      setStatus(`❌ ${(err as Error).message}`);
+      setError((err as Error).message);
     } finally {
       setLoading(false);
       setTimeout(() => setProgress(0), 2000);
     }
   };
 
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    setIsDragging(false);
     const dropped = Array.from(e.dataTransfer.files);
     setFiles(dropped);
   };
@@ -83,17 +100,41 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
     }
   };
 
+  const removeFile = (index: number) => {
+    setFiles(files.filter((_, i) => i !== index));
+  };
+
+  const getFileIcon = (filename: string) => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const iconMap: Record<string, string> = {
+      'pdf': '📄',
+      'docx': '📝',
+      'doc': '📝',
+      'txt': '📃',
+      'md': '📋',
+      'markdown': '📋',
+      'vtt': '🎬',
+      'srt': '🎬',
+      'png': '🖼️',
+      'jpg': '🖼️',
+      'jpeg': '🖼️',
+      'gif': '🖼️'
+    };
+    return iconMap[ext || ''] || '📎';
+  };
+
   const ingestPastedText = async () => {
     if (!pastedText.trim() || !pastedTextTitle.trim()) {
-      setStatus('Title and content are required.');
+      setError('Title and content are required.');
       return;
     }
     if (!workspaceId) {
-      setStatus('Please select a workspace first.');
+      setError('Please select a workspace first.');
       return;
     }
     
     setStatus(null);
+    setError(null);
     setLoading(true);
     setProgress(0);
     
@@ -118,7 +159,7 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
       setPastedText('');
       setPastedTextTitle('');
     } catch (err) {
-      setStatus(`❌ ${(err as Error).message}`);
+      setError((err as Error).message);
     } finally {
       setLoading(false);
       setTimeout(() => setProgress(0), 2000);
@@ -140,21 +181,34 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
         </p>
         <div
           onClick={() => fileInputRef.current?.click()}
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           style={{
-            border: '2px dashed #555',
-            borderRadius: '8px',
-            padding: '2rem',
+            border: isDragging ? '2px dashed var(--accent)' : '2px dashed rgba(255, 255, 255, 0.2)',
+            borderRadius: '16px',
+            padding: '2.5rem',
             textAlign: 'center',
             cursor: 'pointer',
             marginBottom: '1rem',
-            background: '#1a1a1a'
+            background: isDragging 
+              ? 'rgba(255, 107, 53, 0.1)' 
+              : 'rgba(255, 255, 255, 0.02)',
+            transform: isDragging ? 'scale(1.02)' : 'scale(1)',
+            transition: 'all 200ms ease',
+            boxShadow: isDragging 
+              ? '0 0 20px rgba(255, 107, 53, 0.3)' 
+              : 'none'
           }}
         >
-          <p>Click or drag files here</p>
-          <p className="small" style={{ color: '#888' }}>
-            PDF, Word, Markdown, Text, VTT, SRT supported
+          <div style={{ fontSize: '3rem', marginBottom: '0.5rem', opacity: 0.7 }}>
+            {isDragging ? '🎯' : '📤'}
+          </div>
+          <p style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', fontWeight: 500 }}>
+            {isDragging ? 'Drop files here' : 'Click or drag files here'}
+          </p>
+          <p className="small" style={{ color: 'var(--text-muted)', margin: 0 }}>
+            PDF, Word, Markdown, Text, Images, VTT, SRT supported
           </p>
         </div>
         <input
@@ -166,12 +220,62 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
         />
         {files.length > 0 && (
           <div style={{ marginBottom: '1rem' }}>
-            <p className="small">Selected {files.length} file(s):</p>
-            {files.map((f, i) => (
-              <div key={i} className="small" style={{ padding: '0.25rem', color: '#aaa' }}>
-                {f.name} ({(f.size / 1024).toFixed(1)} KB)
-              </div>
-            ))}
+            <p className="small" style={{ marginBottom: '0.75rem', fontWeight: 600 }}>
+              Selected {files.length} file(s):
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {files.map((f, i) => (
+                <div 
+                  key={i} 
+                  style={{ 
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.75rem',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px'
+                  }}
+                >
+                  <span style={{ fontSize: '1.5rem' }}>{getFileIcon(f.name)}</span>
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ 
+                      fontSize: '0.9rem', 
+                      color: 'var(--text-primary)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {f.name}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      {(f.size / 1024).toFixed(1)} KB
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeFile(i);
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      padding: '0.25rem',
+                      fontSize: '1.2rem',
+                      lineHeight: 1,
+                      transition: 'color 150ms ease'
+                    }}
+                    title="Remove file"
+                    onMouseEnter={(e) => e.currentTarget.style.color = 'var(--accent-red)'}
+                    onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <button onClick={ingestFiles} disabled={loading || files.length === 0}>
@@ -228,20 +332,38 @@ export const IngestPanel = ({ workspaceId }: IngestPanelProps) => {
         </button>
       </div>
 
-      {progress > 0 && (
-        <div style={{ marginTop: '1rem', background: '#333', borderRadius: '4px', overflow: 'hidden' }}>
-          <div
-            style={{
-              width: `${progress}%`,
-              height: '4px',
-              background: '#ff6b35',
-              transition: 'width 0.3s'
-            }}
-          />
-        </div>
+      {loading && (
+        <LoadingSpinner 
+          size="medium" 
+          message="Processing your request..." 
+          progress={progress}
+        />
       )}
       
-      {status && <p className="small" style={{ marginTop: '1rem' }}>{status}</p>}
+      {error && (
+        <ErrorMessage
+          title="Ingestion Error"
+          message={error}
+          onRetry={() => {
+            setError(null);
+            setStatus(null);
+          }}
+          type="error"
+        />
+      )}
+      
+      {status && !error && !loading && (
+        <div style={{ 
+          marginTop: '1rem', 
+          padding: '1rem', 
+          background: 'rgba(16, 185, 129, 0.1)',
+          border: '1px solid rgba(16, 185, 129, 0.3)',
+          borderRadius: '8px',
+          color: '#10b981'
+        }}>
+          {status}
+        </div>
+      )}
     </section>
   );
 };

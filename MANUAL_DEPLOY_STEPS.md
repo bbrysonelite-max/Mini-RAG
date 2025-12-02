@@ -39,3 +39,4 @@ Should show healthy status.
 3. If connected: Check "Auto Deploy" is ON
 4. If not connected: Click "Connect GitHub" → Select repo → Enable auto-deploy
 
+

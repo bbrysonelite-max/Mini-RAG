@@ -43,3 +43,4 @@ echo "2. Expected result: Chunks should persist because they're"
 echo "   stored in PostgreSQL (persistent), not ephemeral filesystem"
 echo ""
 
+

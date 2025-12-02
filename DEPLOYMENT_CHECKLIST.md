@@ -54,3 +54,4 @@ Look for:
 - ❌ Any database connection errors
 - ❌ Schema initialization failures
 
+

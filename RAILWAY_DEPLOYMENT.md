@@ -45,3 +45,4 @@ DATABASE_URL="your_railway_database_url" python3 scripts/test_persistence.py
 
 Expected: Should show 27+ chunks persisted in Railway's PostgreSQL database.
 
+

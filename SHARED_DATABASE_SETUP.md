@@ -255,3 +255,4 @@ DATABASE_URL=postgresql://user:password@hostname:5432/dbname
 psql $DATABASE_URL < db_schema.sql
 ```
 
+

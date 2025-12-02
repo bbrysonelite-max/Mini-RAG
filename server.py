@@ -18,6 +18,9 @@ from retrieval import load_chunks, SimpleIndex, format_citation, get_unique_sour
 from score import score_answer
 # Import ingestion functions directly from raglite for user_id support
 from raglite import ingest_youtube, ingest_transcript, ingest_docs
+# Import database-backed functions
+from chunk_db import load_chunks_from_db, store_chunks_to_db, delete_chunks_by_source_db, search_chunks_db, export_chunks_to_jsonl
+from raglite_db import ingest_youtube_db, ingest_transcript_db, ingest_docs_db, migrate_jsonl_to_db
 from rag_pipeline import RAGPipeline
 
 from api_key_service import ApiKeyService
@@ -98,7 +101,9 @@ except ImportError:
     VECTOR_STORE_AVAILABLE = False
     VectorStore = None  # type: ignore
 
+# Legacy JSONL path for backward compatibility and exports
 CHUNKS_PATH = os.environ.get("CHUNKS_PATH", "out/chunks.jsonl")
+USE_DB_CHUNKS = os.getenv("USE_DB_CHUNKS", "true").lower() in {"true", "1", "yes"}
 BACKGROUND_JOBS_ENABLED = os.getenv("BACKGROUND_JOBS_ENABLED", "false").lower() in {"1", "true", "yes"}
 BACKGROUND_QUEUE: Optional[BackgroundTaskQueue] = None
 ALLOW_INSECURE_DEFAULTS = allow_insecure_defaults()
@@ -177,6 +182,120 @@ def _normalize_chunk_uuid(raw_id: str, fallback: int) -> str:
         return str(uuid.UUID(raw_id))
     except ValueError:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, raw_id))
+
+
+def _is_local_mode_user(user_id: Optional[str]) -> bool:
+    """Check if user_id is the LOCAL_MODE placeholder (not a real UUID)."""
+    return LOCAL_MODE and user_id == "local-dev-user"
+
+
+async def _check_workspace_membership(
+    workspace_id: str,
+    user_id: Optional[str],
+    required_role: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if user has access to workspace.
+    
+    Args:
+        workspace_id: Workspace UUID
+        user_id: User UUID (or LOCAL_MODE placeholder)
+        required_role: Optional minimum role required
+        
+    Returns:
+        Membership dict if authorized
+        
+    Raises:
+        HTTPException if access denied
+    """
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Skip membership check for LOCAL_MODE placeholder user
+    if _is_local_mode_user(user_id):
+        logger.debug("LOCAL_MODE: Skipping membership check for local-dev-user")
+        return {"role": "admin"}  # Grant admin role in LOCAL_MODE
+    
+    # Query database for membership
+    try:
+        membership = await DB.fetch_one(
+            """
+            SELECT wm.role
+            FROM workspace_members wm
+            WHERE wm.workspace_id = $1 AND wm.user_id = $2
+            """,
+            (workspace_id, user_id)
+        )
+    except Exception as e:
+        logger.error(f"Failed to check workspace membership: {e}")
+        raise HTTPException(status_code=500, detail="Failed to verify workspace access")
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied")
+    
+    # Check role if required
+    if required_role:
+        role_hierarchy = {"viewer": 0, "editor": 1, "admin": 2, "owner": 3}
+        user_role_level = role_hierarchy.get(membership["role"], 0)
+        required_level = role_hierarchy.get(required_role, 0)
+        
+        if user_role_level < required_level:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient permissions. Required role: {required_role}"
+            )
+    
+    return membership
+
+
+def _is_local_mode_user(user_id: Optional[str]) -> bool:
+    """Check if user_id is the LOCAL_MODE placeholder (not a real UUID)."""
+    return LOCAL_MODE and user_id == "local-dev-user"
+
+
+async def _check_workspace_membership(
+    workspace_id: str,
+    user_id: Optional[str],
+    required_role: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if user has access to workspace (handles LOCAL_MODE).
+    
+    Returns membership dict if authorized, raises HTTPException otherwise.
+    """
+    if DB is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Skip membership check for LOCAL_MODE placeholder user
+    if _is_local_mode_user(user_id):
+        return {"role": "admin"}  # Grant admin role in LOCAL_MODE
+    
+    # Query database for membership
+    membership = await DB.fetch_one(
+        """
+        SELECT wm.role
+        FROM workspace_members wm
+        WHERE wm.workspace_id = $1 AND wm.user_id = $2
+        """,
+        (workspace_id, user_id)
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Workspace not found or access denied")
+    
+    # Check role if required
+    if required_role:
+        role_hierarchy = {"viewer": 0, "editor": 1, "admin": 2, "owner": 3}
+        user_role_level = role_hierarchy.get(membership["role"], 0)
+        required_level = role_hierarchy.get(required_role, 0)
+        
+        if user_role_level < required_level:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient permissions. Required role: {required_role}"
+            )
+    
+    return membership
 
 
 async def _persist_chunks_to_db() -> None:
@@ -1025,8 +1144,16 @@ STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "http://localho
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database connection on startup (if configured)."""
+    """Initialize database connection and cache on startup (if configured)."""
     global DB, USER_SERVICE, API_KEY_SERVICE, QUOTA_SERVICE, BILLING_SERVICE, BACKGROUND_QUEUE, MODEL_SERVICE, RAG_PIPELINE
+    
+    # Initialize Redis cache if available
+    from redis_cache import init_cache_service
+    cache_service = await init_cache_service()
+    if cache_service:
+        logger.info("Redis cache service initialized")
+    else:
+        logger.info("Running without Redis cache")
     
     # Try to initialize database if connection string is provided
     db_url = os.environ.get("DATABASE_URL")
@@ -1068,13 +1195,13 @@ async def startup_event():
         configure_api_key_auth(None)
         QUOTA_SERVICE = None
         BILLING_SERVICE = None
-    # Try loading chunks from database before falling back to file
-    if DB and VECTOR_STORE_AVAILABLE and not os.path.exists(CHUNKS_PATH):
+    # Load chunks from database or file based on USE_DB_CHUNKS setting
+    if USE_DB_CHUNKS and DB and VECTOR_STORE_AVAILABLE:
         try:
             store = _get_vector_store()
             if store:
-                logger.info("Loading chunks from database (file not found)")
-                chunks_from_db = await store.fetch_all_chunks()
+                logger.info("Loading chunks from database")
+                chunks_from_db = await load_chunks_from_db(store)
                 if chunks_from_db:
                     global INDEX, CHUNKS, CHUNK_ID_MAP
                     with _index_lock:
@@ -1082,13 +1209,26 @@ async def startup_event():
                         CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
                         INDEX = SimpleIndex(CHUNKS)
                     logger.info(f"Loaded {len(CHUNKS)} chunks from database")
+                else:
+                    logger.info("No chunks in database yet")
+                    CHUNKS = []
+                    INDEX = SimpleIndex([])
         except Exception as e:
             logger.warning(f"Failed to load from database: {e}")
+            # Fall back to file if database fails
+            if os.path.exists(CHUNKS_PATH):
+                logger.info("Falling back to file-based chunks")
+                ensure_index(require=False)
+    elif not USE_DB_CHUNKS and os.path.exists(CHUNKS_PATH):
+        # Legacy file-based mode
+        logger.info("Loading chunks from file (USE_DB_CHUNKS=false)")
+        ensure_index(require=False)
+    elif not USE_DB_CHUNKS and not os.path.exists(CHUNKS_PATH):
+        logger.info("No chunks file found, starting with empty index")
+        CHUNKS = []
+        INDEX = SimpleIndex([])
 
     asyncio.create_task(_warm_and_measure())
-
-    if INDEX is None or not CHUNKS:
-        ensure_index(require=False)  # Don't crash on startup if no documents yet
 
     if MODEL_SERVICE is None:
         MODEL_SERVICE = _init_model_service()
@@ -1131,7 +1271,30 @@ async def shutdown_event():
         BACKGROUND_QUEUE = None
 
 def _count_lines(path):
+    """Count lines in file or chunks in database."""
     global _chunk_count_cache, _chunk_count_stamp
+    
+    if USE_DB_CHUNKS:
+        # Count chunks in database
+        store = _get_vector_store()
+        if store:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context, create a task
+                    future = asyncio.create_task(load_chunks_from_db(store))
+                    chunks = asyncio.run_coroutine_threadsafe(future, loop).result()
+                else:
+                    chunks = asyncio.run(load_chunks_from_db(store))
+                count = len(chunks)
+                CHUNK_COUNT_GAUGE.set(count)
+                _chunk_count_cache = count
+                return count
+            except Exception as e:
+                logger.warning(f"Failed to count chunks from database: {e}")
+    
+    # Fallback to file counting
     try:
         modified = os.path.getmtime(path)
     except OSError:
@@ -1185,40 +1348,51 @@ def ensure_index(require: bool = True):
     global INDEX, CHUNKS, CHUNK_ID_MAP
     with _index_lock:
         if INDEX is None:
-            # Try loading from file first
-            if not os.path.exists(CHUNKS_PATH):
-                # File doesn't exist - try loading from database
-                # Note: Database loading happens in startup_event() async handler
-                # This sync function will skip DB loading and let startup handle it
-                # Neither file nor database has chunks
+            # Check if we should load from database or file
+            if USE_DB_CHUNKS:
+                # Load from database - this is handled async in startup_event
+                # For sync context, we'll skip and let startup handle it
                 if require:
-                    logger.error(f"Index not found at {CHUNKS_PATH} and no chunks in database")
-                    raise IndexNotFoundError("Index not found. Please ingest documents first.")
+                    logger.error("Index not loaded from database yet")
+                    raise IndexNotFoundError("Index not found. Please wait for initialization or ingest documents first.")
                 else:
-                    logger.warning(f"No chunks file at {CHUNKS_PATH} and no database chunks - starting with empty index")
+                    logger.info("Database chunks will be loaded asynchronously during startup")
                     CHUNKS = []
                     INDEX = SimpleIndex([])
                     return
-            try:
-                CHUNKS = load_chunks(CHUNKS_PATH)
-                CHUNK_ID_MAP = {
-                    chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
-                }
-            except Exception as e:
-                logger.error(f"Failed to load chunks: {e}", exc_info=True)
-                if require:
-                    raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
-                else:
-                    CHUNKS = []
-                    INDEX = SimpleIndex([])
-                    return
+            else:
+                # Load from file (legacy mode)
+                if not os.path.exists(CHUNKS_PATH):
+                    if require:
+                        logger.error(f"Index not found at {CHUNKS_PATH}")
+                        raise IndexNotFoundError("Index not found. Please ingest documents first.")
+                    else:
+                        logger.warning(f"No chunks file at {CHUNKS_PATH} - starting with empty index")
+                        CHUNKS = []
+                        INDEX = SimpleIndex([])
+                        return
+                try:
+                    CHUNKS = load_chunks(CHUNKS_PATH)
+                    CHUNK_ID_MAP = {
+                        chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to load chunks: {e}", exc_info=True)
+                    if require:
+                        raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
+                    else:
+                        CHUNKS = []
+                        INDEX = SimpleIndex([])
+                        return
+            
             if not CHUNKS:
                 if require:
                     raise IndexNotFoundError("Index is empty. Please ingest documents first.")
                 else:
-                    logger.warning("Chunks file is empty - starting with empty index")
+                    logger.warning("No chunks loaded - starting with empty index")
                     INDEX = SimpleIndex([])
                     return
+            
             try:
                 INDEX = SimpleIndex(CHUNKS)
                 logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
@@ -1983,13 +2157,28 @@ async def _ingest_urls_core(
                 "ingest_youtube",
                 {"url": url, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
             ):
-                r = ingest_youtube(
-                    url,
-                    out_jsonl=CHUNKS_PATH,
-                    language=url_req.language,
-                    user_id=user_id,
-                    workspace_id=workspace_id
-                )
+                if USE_DB_CHUNKS:
+                    # Use database storage
+                    store = _get_vector_store()
+                    if store:
+                        r = await ingest_youtube_db(
+                            url,
+                            store,
+                            language=url_req.language,
+                            user_id=user_id,
+                            workspace_id=workspace_id
+                        )
+                    else:
+                        raise RuntimeError("Database not available for chunk storage")
+                else:
+                    # Legacy file storage
+                    r = ingest_youtube(
+                        url,
+                        out_jsonl=CHUNKS_PATH,
+                        language=url_req.language,
+                        user_id=user_id,
+                        workspace_id=workspace_id
+                    )
             written = r.get("written", 0)
             if written == 0 and r.get("stderr"):
                 error_msg = r.get("stderr", "Unknown error")
@@ -2081,13 +2270,26 @@ async def _ingest_urls_core(
                         "ingest_transcript_retry",
                         {"file": vtt, "user_id": user_id, "workspace_id": workspace_id},
                     ):
-                        r = ingest_transcript(
-                            vtt,
-                            out_jsonl=CHUNKS_PATH,
-                            language=url_req.language,
-                            user_id=user_id,
-                            workspace_id=workspace_id
-                        )
+                        if USE_DB_CHUNKS:
+                            store = _get_vector_store()
+                            if store:
+                                r = await ingest_transcript_db(
+                                    vtt,
+                                    store,
+                                    language=url_req.language,
+                                    user_id=user_id,
+                                    workspace_id=workspace_id
+                                )
+                            else:
+                                raise RuntimeError("Database not available for chunk storage")
+                        else:
+                            r = ingest_transcript(
+                                vtt,
+                                out_jsonl=CHUNKS_PATH,
+                                language=url_req.language,
+                                user_id=user_id,
+                                workspace_id=workspace_id
+                            )
                 except (subprocess.SubprocessError, FileNotFoundError) as exc:
                     logger.error(f"YouTube transcript extraction failed: {exc}")
                     fallback_outcome = "failure"
@@ -3046,16 +3248,30 @@ async def get_workspace(request: Request, workspace_id: str):
     
     user_id = user.get("user_id") if user else None
     
-    # Check workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT w.*, wm.role
-        FROM workspaces w
-        JOIN workspace_members wm ON wm.workspace_id = w.id
-        WHERE w.id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
+    # Check workspace membership (handles LOCAL_MODE)
+    await _check_workspace_membership(workspace_id, user_id)
+    
+    # Get workspace details
+    if _is_local_mode_user(user_id):
+        # In LOCAL_MODE, get workspace without user join
+        membership = await DB.fetch_one(
+            """
+            SELECT w.*, 'admin' as role
+            FROM workspaces w
+            WHERE w.id = $1
+            """,
+            (workspace_id,)
+        )
+    else:
+        membership = await DB.fetch_one(
+            """
+            SELECT w.*, wm.role
+            FROM workspaces w
+            JOIN workspace_members wm ON wm.workspace_id = w.id
+            WHERE w.id = $1 AND wm.user_id = $2
+            """,
+            (workspace_id, user_id)
+        )
     
     if not membership:
         raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
@@ -3081,22 +3297,8 @@ async def update_workspace(request: Request, workspace_id: str):
     
     user_id = user.get("user_id") if user else None
     
-    # Check workspace membership and role
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
-    
-    role = membership.get("role")
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=403, detail="Only owners and admins can update workspace.")
+    # Check workspace membership and role (handles LOCAL_MODE)
+    membership = await _check_workspace_membership(workspace_id, user_id, required_role="admin")
     
     body = await request.json()
     updates = []
@@ -3148,18 +3350,8 @@ async def switch_workspace(request: Request, workspace_id: str):
     
     user_id = user.get("user_id") if user else None
     
-    # Verify workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    # Verify workspace membership (handles LOCAL_MODE)
+    membership = await _check_workspace_membership(workspace_id, user_id)
     
     # For now, just return success (frontend will track current workspace)
     # In future, could store in session/cookie
@@ -3179,18 +3371,8 @@ async def list_assets(request: Request, workspace_id: str, type: Optional[str] =
     
     user_id = user.get("user_id") if user else None
     
-    # Verify workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    # Verify workspace membership (handles LOCAL_MODE)
+    membership = await _check_workspace_membership(workspace_id, user_id)
     
     # Build query
     query = """
@@ -3227,18 +3409,8 @@ async def create_asset(request: Request, workspace_id: str):
     
     user_id = user.get("user_id") if user else None
     
-    # Verify workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    # Verify workspace membership (handles LOCAL_MODE)
+    membership = await _check_workspace_membership(workspace_id, user_id)
     
     body = await request.json()
     asset_type = body.get("type", "").strip()
@@ -3276,15 +3448,26 @@ async def get_asset(request: Request, asset_id: str):
     user_id = user.get("user_id") if user else None
     
     # Get asset and verify workspace membership
-    asset_row = await DB.fetch_one(
-        """
-        SELECT a.*
-        FROM assets a
-        JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
-        WHERE a.id = $1 AND wm.user_id = $2
-        """,
-        (asset_id, user_id)
-    )
+    if _is_local_mode_user(user_id):
+        # In LOCAL_MODE, get asset without user join
+        asset_row = await DB.fetch_one(
+            """
+            SELECT a.*
+            FROM assets a
+            WHERE a.id = $1
+            """,
+            (asset_id,)
+        )
+    else:
+        asset_row = await DB.fetch_one(
+            """
+            SELECT a.*
+            FROM assets a
+            JOIN workspace_members wm ON wm.workspace_id = a.workspace_id
+            WHERE a.id = $1 AND wm.user_id = $2
+            """,
+            (asset_id, user_id)
+        )
     
     if not asset_row:
         raise HTTPException(status_code=404, detail="Asset not found or access denied.")
@@ -3437,18 +3620,8 @@ async def list_history(request: Request, workspace_id: str, limit: int = 50):
     
     user_id = user.get("user_id") if user else None
     
-    # Verify workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    # Verify workspace membership (handles LOCAL_MODE automatically)
+    await _check_workspace_membership(workspace_id, user_id)
     
     rows = await DB.fetch_all(
         """
@@ -3474,15 +3647,26 @@ async def get_history_entry(request: Request, history_id: str):
     user_id = user.get("user_id") if user else None
     
     # Get history entry and verify workspace membership
-    history_row = await DB.fetch_one(
-        """
-        SELECT h.*
-        FROM history h
-        JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
-        WHERE h.id = $1 AND wm.user_id = $2
-        """,
-        (history_id, user_id)
-    )
+    if _is_local_mode_user(user_id):
+        # In LOCAL_MODE, get history without user join
+        history_row = await DB.fetch_one(
+            """
+            SELECT h.*
+            FROM history h
+            WHERE h.id = $1
+            """,
+            (history_id,)
+        )
+    else:
+        history_row = await DB.fetch_one(
+            """
+            SELECT h.*
+            FROM history h
+            JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
+            WHERE h.id = $1 AND wm.user_id = $2
+            """,
+            (history_id, user_id)
+        )
     
     if not history_row:
         raise HTTPException(status_code=404, detail="History entry not found or access denied.")
@@ -3503,18 +3687,8 @@ async def paste_document(request: Request, workspace_id: str):
     
     user_id = user.get("user_id") if user else None
     
-    # Verify workspace membership
-    membership = await DB.fetch_one(
-        """
-        SELECT wm.role
-        FROM workspace_members wm
-        WHERE wm.workspace_id = $1 AND wm.user_id = $2
-        """,
-        (workspace_id, user_id)
-    )
-    
-    if not membership:
-        raise HTTPException(status_code=404, detail="Workspace not found or access denied.")
+    # Verify workspace membership (handles LOCAL_MODE)
+    membership = await _check_workspace_membership(workspace_id, user_id)
     
     await _require_billing_active(workspace_id)
     
@@ -3536,13 +3710,25 @@ async def paste_document(request: Request, workspace_id: str):
     
     try:
         # Use existing synchronous ingestion function
-        result = ingest_docs(
-            path=temp_path,
-            out_jsonl=CHUNKS_PATH,
-            language="en",
-            user_id=user_id,
-            workspace_id=workspace_id
-        )
+        if USE_DB_CHUNKS:
+            store = _get_vector_store()
+            if not store:
+                raise RuntimeError("Database not available for chunk storage")
+            result = await ingest_docs_db(
+                path=temp_path,
+                vector_store=store,
+                language="en",
+                user_id=user_id,
+                workspace_id=workspace_id
+            )
+        else:
+            result = ingest_docs(
+                path=temp_path,
+                out_jsonl=CHUNKS_PATH,
+                language="en",
+                user_id=user_id,
+                workspace_id=workspace_id
+            )
         
         chunks_added = result.get("written", 0)
         
@@ -3580,15 +3766,26 @@ async def save_history_as_asset(request: Request, history_id: str):
     user_id = user.get("user_id") if user else None
     
     # Get history entry and verify workspace membership
-    history_row = await DB.fetch_one(
-        """
-        SELECT h.*
-        FROM history h
-        JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
-        WHERE h.id = $1 AND wm.user_id = $2
-        """,
-        (history_id, user_id)
-    )
+    if _is_local_mode_user(user_id):
+        # In LOCAL_MODE, get history without user join
+        history_row = await DB.fetch_one(
+            """
+            SELECT h.*
+            FROM history h
+            WHERE h.id = $1
+            """,
+            (history_id,)
+        )
+    else:
+        history_row = await DB.fetch_one(
+            """
+            SELECT h.*
+            FROM history h
+            JOIN workspace_members wm ON wm.workspace_id = h.workspace_id
+            WHERE h.id = $1 AND wm.user_id = $2
+            """,
+            (history_id, user_id)
+        )
     
     if not history_row:
         raise HTTPException(status_code=404, detail="History entry not found or access denied.")
@@ -3814,36 +4011,72 @@ async def _ingest_files_core(
                 "ingest_file",
                 {"file": safe_name, "user_id": user_id, "workspace_id": workspace_id, "api_key": bool(api_key_principal)},
             ):
-                if lower.endswith((".vtt", ".srt")):
-                    handler = "transcript"
-                    record = ingest_transcript(
-                        str(path),
-                        out_jsonl=CHUNKS_PATH,
-                        language=language,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                    )
-                elif lower.endswith((".pdf", ".docx", ".md", ".markdown", ".txt",
-                                      ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp")):
-                    # Handle all documents and images through ingest_docs (now supports images)
-                    handler = "docs"
-                    record = ingest_docs(
-                        str(path),
-                        out_jsonl=CHUNKS_PATH,
-                        language=language,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                    )
+                if USE_DB_CHUNKS:
+                    # Database-backed ingestion
+                    store = _get_vector_store()
+                    if not store:
+                        raise RuntimeError("Database not available for chunk storage")
+                    
+                    if lower.endswith((".vtt", ".srt")):
+                        handler = "transcript"
+                        record = await ingest_transcript_db(
+                            str(path),
+                            store,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id
+                        )
+                    elif lower.endswith((".pdf", ".docx", ".md", ".markdown", ".txt",
+                                          ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp")):
+                        handler = "docs"
+                        record = await ingest_docs_db(
+                            str(path),
+                            store,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id
+                        )
+                    else:
+                        # Try to ingest as text anyway (last resort)
+                        handler = "text_fallback"
+                        record = await ingest_docs_db(
+                            str(path),
+                            store,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id
+                        )
                 else:
-                    # Try to ingest as text anyway (last resort)
-                    handler = "text_fallback"
-                    record = ingest_docs(
-                        str(path),
-                        out_jsonl=CHUNKS_PATH,
-                        language=language,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                    )
+                    # Legacy file-based ingestion
+                    if lower.endswith((".vtt", ".srt")):
+                        handler = "transcript"
+                        record = ingest_transcript(
+                            str(path),
+                            out_jsonl=CHUNKS_PATH,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                        )
+                    elif lower.endswith((".pdf", ".docx", ".md", ".markdown", ".txt",
+                                          ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp")):
+                        handler = "docs"
+                        record = ingest_docs(
+                            str(path),
+                            out_jsonl=CHUNKS_PATH,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                        )
+                    else:
+                        # Try to ingest as text anyway (last resort)
+                        handler = "text_fallback"
+                        record = ingest_docs(
+                            str(path),
+                            out_jsonl=CHUNKS_PATH,
+                            language=language,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                        )
         except Exception as exc:
             record = {"error": str(exc)}
             processing_outcome = "failure"

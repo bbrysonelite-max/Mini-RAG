@@ -11,6 +11,12 @@ import logging
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from database import Database, get_database
+from database_utils import (
+    with_retry,
+    database_transaction,
+    batch_insert_with_transaction,
+    ensure_connection
+)
 
 logger = logging.getLogger(__name__)
 
@@ -204,12 +210,13 @@ class VectorStore:
             chunks.append(chunk)
         return chunks
 
+    @with_retry(max_attempts=3, retry_exceptions=(ConnectionError, TimeoutError))
     async def ensure_chunks(
         self,
         chunk_entries: List[Tuple[str, Dict[str, Any]]],
         context: Dict[str, str]
     ) -> None:
-        """Ensure chunk records exist for the supplied ids."""
+        """Ensure chunk records exist for the supplied ids with transaction support."""
         if not chunk_entries:
             return
 
@@ -236,64 +243,70 @@ class VectorStore:
         error_count = 0
         errors = []
 
-        for chunk_id, chunk in validated_entries:
-            metadata = chunk.get("metadata", {}) or {}
-            position = metadata.get("chunk_index", 0)
-            start_offset = metadata.get("start_sec")
-            end_offset = metadata.get("end_sec")
-            text = chunk.get("content", "")
+        # Use transaction for batch insert
+        async with database_transaction(self.db) as conn:
+            for chunk_id, chunk in validated_entries:
+                metadata = chunk.get("metadata", {}) or {}
+                position = metadata.get("chunk_index", 0)
+                start_offset = metadata.get("start_sec")
+                end_offset = metadata.get("end_sec")
+                text = chunk.get("content", "")
 
-            if not text:
-                logger.warning(f"Chunk {chunk_id} has empty text, skipping")
-                continue
-
-            try:
-                # Check for duplicate content first (deduplication)
-                existing = await self.db.fetch_one(
-                    """
-                    SELECT id FROM chunks 
-                    WHERE document_id = %s 
-                      AND text = %s 
-                      AND position = %s
-                    LIMIT 1
-                    """,
-                    (context["document_id"], text, position)
-                )
-                
-                if existing:
-                    # Chunk with same content already exists - skip (deduplication)
-                    logger.debug(f"Duplicate chunk detected (same text+position), skipping: {chunk_id}")
-                    success_count += 1  # Count as success (deduplication working)
+                if not text:
+                    logger.warning(f"Chunk {chunk_id} has empty text, skipping")
                     continue
-                
-                await self.db.execute(
-                    """
-                    INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position, start_offset, end_offset)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE
-                    SET text = EXCLUDED.text,
-                        position = EXCLUDED.position,
-                        start_offset = EXCLUDED.start_offset,
-                        end_offset = EXCLUDED.end_offset
-                    """,
-                    (
-                        chunk_id,
-                        context["organization_id"],
-                        context["workspace_id"],
-                        context["document_id"],
-                        context["project_id"],
-                        text,
-                        position,
-                        start_offset,
-                        end_offset,
-                    ),
-                )
-                success_count += 1
-            except Exception as exc:
-                error_count += 1
-                error_msg = f"Failed to ensure chunk {chunk_id}: {exc}"
-                logger.error(error_msg, exc_info=True)
-                errors.append(error_msg)
+
+                try:
+                    # Check for duplicate content first (deduplication)
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            SELECT id FROM chunks 
+                            WHERE document_id = %s 
+                              AND text = %s 
+                              AND position = %s
+                            LIMIT 1
+                            """,
+                            (context["document_id"], text, position)
+                        )
+                        existing = await cur.fetchone()
+                    
+                    if existing:
+                        # Chunk with same content already exists - skip (deduplication)
+                        logger.debug(f"Duplicate chunk detected (same text+position), skipping: {chunk_id}")
+                        success_count += 1  # Count as success (deduplication working)
+                        continue
+                    
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            INSERT INTO chunks (id, organization_id, workspace_id, document_id, project_id, text, position, start_offset, end_offset)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE
+                            SET text = EXCLUDED.text,
+                                position = EXCLUDED.position,
+                                start_offset = EXCLUDED.start_offset,
+                                end_offset = EXCLUDED.end_offset
+                            """,
+                            (
+                                chunk_id,
+                                context["organization_id"],
+                                context["workspace_id"],
+                                context["document_id"],
+                                context["project_id"],
+                                text,
+                                position,
+                                start_offset,
+                                end_offset,
+                            ),
+                        )
+                    success_count += 1
+                except Exception as exc:
+                    error_count += 1
+                    error_msg = f"Failed to ensure chunk {chunk_id}: {exc}"
+                    logger.error(error_msg, exc_info=True)
+                    errors.append(error_msg)
+                    # Continue with other chunks in the transaction
 
         if error_count > 0:
             logger.warning(f"Chunk persistence completed with {error_count} errors out of {len(validated_entries)} chunks")

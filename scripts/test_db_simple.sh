@@ -38,3 +38,4 @@ echo ""
 # Run the test
 python3 scripts/test_database.py
 
+

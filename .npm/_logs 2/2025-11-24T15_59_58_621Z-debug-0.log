@@ -1,0 +1,18 @@
+0 verbose cli /usr/local/Cellar/node/25.2.1/bin/node /usr/local/bin/npm
+1 info using npm@11.6.2
+2 info using node@v25.2.1
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/brentbryson/Desktop/mini-rag/frontend-react/.npmrc
+5 silly config load:file:/Users/brentbryson/Desktop/mini-rag/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm run build
+8 verbose argv "run" "build"
+9 verbose logfile logs-max:10 dir:/Users/brentbryson/Desktop/mini-rag/.npm/_logs/2025-11-24T15_59_58_621Z-
+10 verbose logfile /Users/brentbryson/Desktop/mini-rag/.npm/_logs/2025-11-24T15_59_58_621Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd /Users/brentbryson/Desktop/mini-rag/frontend-react
+13 verbose os Darwin 24.6.0
+14 verbose node v25.2.1
+15 verbose npm  v11.6.2
+16 verbose exit 0
+17 info ok

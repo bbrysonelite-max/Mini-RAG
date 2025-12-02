@@ -34,3 +34,4 @@ Even if schema fails:
 
 You can sleep now - the app is functional. The database persistence is a nice-to-have that can be fixed tomorrow.
 
+

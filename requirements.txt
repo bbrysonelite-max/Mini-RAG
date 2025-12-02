@@ -16,6 +16,8 @@ bcrypt>=4.0.0
 # Database & Vector Store (pgvector)
 psycopg[binary]>=3.1.0
 psycopg-pool>=3.1.0
+alembic>=1.13.0
+sqlalchemy>=2.0.0
 
 # LLM Providers
 openai>=1.0.0
@@ -39,3 +41,4 @@ Pillow>=10.0.0
 pdf2image>=1.16.0
 
 itsdangerous
+bleach>=6.0.0

@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import { LoadingSpinner } from './LoadingSpinner';
+import { ErrorMessage } from './ErrorMessage';
 
 interface Chunk {
   index: number;
@@ -283,7 +285,24 @@ export const AskPanel = ({ workspaceId }: AskPanelProps) => {
         )}
       </div>
 
-      {error && <p className="small error" role="alert">{error}</p>}
+      {loading && (
+        <LoadingSpinner 
+          size="medium" 
+          message="Searching your knowledge base..." 
+        />
+      )}
+
+      {error && (
+        <ErrorMessage
+          title="Query Error"
+          message={error}
+          onRetry={() => {
+            setError(null);
+            submit();
+          }}
+          type="error"
+        />
+      )}
       {conversation.length > 0 && (
         <div className="conversation-history">
           <h4>Conversation ({conversation.length}/{maxRefinementLevel})</h4>

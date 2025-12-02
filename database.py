@@ -52,37 +52,71 @@ class Database:
         )
         self.pool: Optional[AsyncConnectionPool] = None
     
-    async def initialize(self, min_size: int = 2, max_size: int = 10) -> None:
+    async def initialize(self, min_size: int = None, max_size: int = None) -> None:
         """
-        Initialize connection pool.
+        Initialize connection pool with optimized settings.
         
         Args:
-            min_size: Minimum number of connections in pool
-            max_size: Maximum number of connections in pool
+            min_size: Minimum number of connections in pool (auto-calculated if None)
+            max_size: Maximum number of connections in pool (auto-calculated if None)
         """
         if self.pool:
             logger.warning("Pool already initialized")
             return
         
+        # Get optimized pool configuration
+        from database_config import get_pool_config, calculate_optimal_pool_size
+        
+        environment = os.getenv("ENVIRONMENT", "production")
+        pool_config = get_pool_config(environment)
+        
+        # Use provided values or optimized defaults
+        if min_size is None:
+            optimal = calculate_optimal_pool_size()
+            min_size = pool_config.get("min_size", optimal["min_size"])
+        if max_size is None:
+            optimal = calculate_optimal_pool_size()
+            max_size = pool_config.get("max_size", optimal["max_size"])
+        
         try:
+            # Create connection pool with optimized settings
             self.pool = AsyncConnectionPool(
                 self.connection_string,
                 min_size=min_size,
                 max_size=max_size,
+                timeout=pool_config.get("connect_timeout", 10),
+                max_lifetime=pool_config.get("max_lifetime", 3600),
+                max_idle=pool_config.get("max_idle", 300),
                 open=False
             )
             await self.pool.open()
-            logger.info(f"Database pool initialized (min={min_size}, max={max_size})")
+            logger.info(
+                f"Database pool initialized (min={min_size}, max={max_size}, "
+                f"environment={environment}, cpu_count={optimal.get('cpu_count', 'unknown')})"
+            )
             
-            # Test connection
+            # Test connection with timeout
+            import asyncio
             async with self.pool.connection() as conn:
                 async with conn.cursor() as cur:
+                    # Set statement timeout for this test query
+                    await cur.execute("SET statement_timeout = '5s'")
                     await cur.execute("SELECT version()")
                     version = await cur.fetchone()
                     logger.info(f"Connected to PostgreSQL: {version[0][:50]}...")
+            
+            # Start pool monitoring
+            from database_config import PoolMonitor
+            self._pool_monitor = PoolMonitor(self.pool, logger)
         
         except Exception as e:
             logger.error(f"Failed to initialize database pool: {e}")
+            if self.pool:
+                try:
+                    await self.pool.close()
+                except:
+                    pass
+                self.pool = None
             raise
     
     async def close(self) -> None:

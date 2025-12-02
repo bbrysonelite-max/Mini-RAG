@@ -151,6 +151,7 @@ const Header: FC<HeaderProps> = ({ active, onNavigate, currentWorkspace: propWor
               className={link.key === active ? 'active' : ''}
               onClick={() => onNavigate(link.key)}
               type="button"
+              data-nav={link.key}
             >
               {link.label}
             </button>
