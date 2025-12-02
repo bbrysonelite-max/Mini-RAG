@@ -1,5 +1,57 @@
 ## Changelog
 
+### 2025-12-02
+
+#### UI/UX Polish
+- **New Components:** LoadingSpinner, ErrorMessage, Toast, ToastContainer, Skeleton, EmptyState, KeyboardShortcutsModal
+- **New Hooks:** useToast (notification management), useKeyboardShortcuts (global shortcuts)
+- **Enhanced File Upload:** Drag-drop animations, file icons, individual file cards with remove buttons
+- **Keyboard Shortcuts:** ⌘+K (search), ⌘+I (ingest), ⌘+S (sources), ⌘+A (assets), ⌘+, (admin), ? (help modal)
+- **Empty States:** Custom empty state components for Sources, Assets, History, and Search results
+- **Skeleton Loaders:** SkeletonChunkCard, SkeletonSourceItem, SkeletonAssetCard, SkeletonHistoryItem
+- **Micro-Animations:** Button ripple, checkmark success, shake error, fade-in, slide-in, celebrate effects
+- **Accessibility (WCAG 2.1 AA):** Focus visible indicators, skip-to-main link, reduced motion support, high contrast mode, ARIA labels, screen reader support
+
+#### Bug Fixes
+- **Fixed UUID Validation Error:** LOCAL_MODE placeholder user "local-dev-user" was causing database queries to fail on History/Assets pages
+- **Added Helper Functions:** `_is_local_mode_user()` and `_check_workspace_membership()` for consistent LOCAL_MODE handling
+- **Updated 13 Database Queries:** All workspace membership checks now properly handle LOCAL_MODE
+
+#### Database Hardening
+- **Alembic Migrations:** Added migration system with initial schema migration
+- **Connection Pooling:** Optimized pool configuration with environment-specific settings
+- **Retry Logic:** Added exponential backoff decorators for database operations
+- **Backup System:** Automated PostgreSQL backup script with S3 upload support
+- **Redis Caching:** Query result caching, session storage, and rate limiting backend
+
+#### Security Enhancements
+- **Input Validation:** SQL injection and XSS pattern detection
+- **CSRF Protection:** Token generation and validation utilities
+- **Password Policy:** Strength validation with bcrypt hashing
+- **Security Headers:** CSP, X-Frame-Options, HSTS configuration
+- **Audit Logging:** Security event logger with file output
+
+#### New Files
+- `frontend-react/src/components/Toast.tsx` - Toast notification component
+- `frontend-react/src/components/ToastContainer.tsx` - Toast stack manager
+- `frontend-react/src/components/Skeleton.tsx` - Loading skeleton components
+- `frontend-react/src/components/EmptyState.tsx` - Empty state templates
+- `frontend-react/src/components/KeyboardShortcuts.tsx` - Shortcuts modal
+- `frontend-react/src/hooks/useToast.ts` - Toast state management
+- `frontend-react/src/hooks/useKeyboardShortcuts.ts` - Keyboard shortcut handler
+- `chunk_db.py` - Database-backed chunk operations
+- `raglite_db.py` - Database-backed ingestion functions
+- `database_utils.py` - Transaction and retry utilities
+- `database_config.py` - Connection pool configuration
+- `redis_cache.py` - Redis caching service
+- `security_utils.py` - Security validation utilities
+- `alembic/` - Database migration system
+
+#### Dependencies
+- Added: alembic>=1.13.0, sqlalchemy>=2.0.0, bleach>=6.0.0
+
+---
+
 ### 2025-11-17
 - Added automated test suite `test_phase3_auth.py` covering JWT, chunk user IDs, search filtering, and admin role checks.
 - Ran test suite (`venv/bin/python3 test_phase3_auth.py`); 6 tests passed, 1 skipped (needs DATABASE_URL for user service).

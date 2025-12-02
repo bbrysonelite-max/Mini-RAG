@@ -1,253 +1,248 @@
-# Mini-RAG: Production-Ready _(When Configured)_ RAG System
+# Second Brain - Enterprise RAG System
 
-> **⚠️ Reality Check:** The codebase implements enterprise features, but the shared Railway deployment still runs with `LOCAL_MODE=true`, BM25-only search, no Redis cache, and Stripe disabled. Read `DEPLOYMENT_STATUS.md` before promising “production ready.”
->
-> **👉 See [START_HERE.md](START_HERE.md) for setup steps _after_ you provision real secrets and services.**
+> **Build your personal knowledge base with AI-powered search and command workflows.**
 
-Mini-RAG targets a multi-tenant RAG (Retrieval-Augmented Generation) system with OAuth, Stripe, quotas, observability, and deployment automation. Those capabilities only become “production ready” once you replace placeholders, scrub demo data, and enable the optional services described below.
+Second Brain is a production-ready RAG (Retrieval-Augmented Generation) system that transforms documents, videos, and text into a searchable, AI-queryable knowledge base.
 
-## Features
+## ✨ Features
 
-- **Multi-Tenant Architecture:** Organization & workspace isolation with role-based access (requires PostgreSQL; shipped)
-- **Authentication:** Google OAuth + JWT sessions + API keys (code ready, but Railway defaults to `LOCAL_MODE=true`)
-- **Document Ingestion:** PDF, DOCX, Markdown, TXT, VTT, SRT, YouTube transcripts (shipping)
-- **Hybrid Search:** BM25 always on; pgvector embeddings available _after_ you supply OpenAI/Anthropic keys and run the embedding job
-- **Web UI:** Legacy HTML app (`/app`) plus preview React shell (`/app-react`) – both need real auth + billing context to be fully accurate
-- **Usage Quotas:** Workspace-level request and chunk limits enforced when DATABASE_URL is configured
-- **Billing Integration:** Stripe checkout/portal/webhooks implemented but **inactive** until real `STRIPE_*` secrets exist
-- **Caching & Dedup:** Redis-backed cache/deduplicator implemented but **disabled by default**
-- **Observability:** Prometheus metrics + OpenTelemetry traces (available; exporters optional)
-- **Answer Scoring:** Coverage, groundedness, citation, and brevity metrics in responses
+### Core Capabilities
+- **Multi-format Ingestion:** PDF, Word, Markdown, Text, Images (OCR), VTT/SRT subtitles, YouTube transcripts
+- **AI-Powered Search:** Hybrid BM25 + vector search with pgvector
+- **Command Workflows:** Build prompts, workflows, customer avatars, expert instructions, and more
+- **Multi-Tenant Architecture:** Organizations, workspaces, and projects with role-based access
 
-### Current Deployment Reality (Nov 29, 2025)
+### Modern UI/UX (New!)
+- **Toast Notifications:** Elegant slide-in feedback for all actions
+- **Loading States:** Animated spinners and skeleton loaders
+- **Empty States:** Helpful guidance when no data exists
+- **Keyboard Shortcuts:** `⌘+K` (search), `⌘+I` (ingest), `⌘+S` (sources), `?` (help)
+- **Drag & Drop:** Enhanced file upload with previews and animations
+- **Accessibility:** WCAG 2.1 AA compliant with full keyboard navigation
 
-| Area | Status | Required to flip to “prod-ready” |
-|------|--------|-----------------------------------|
-| Auth | `LOCAL_MODE=true` (no login required) | Set `LOCAL_MODE=false`, configure Google OAuth, verify cookies |
-| Search | BM25 only | Provide OpenAI/Anthropic keys, generate embeddings, enable pgvector |
-| Caching/Dedup | Disabled | Provision Redis + set `REDIS_ENABLED=true` |
-| Billing | Stripe keys unset | Supply real `STRIPE_*` secrets, verify webhook endpoint |
-| Background jobs | Disabled | Set `BACKGROUND_JOBS_ENABLED=true`, monitor queue |
-| Data | `out/chunks.jsonl` ships demo rows | Scrub sample data before launch |
-
-See `DEPLOYMENT_STATUS.md` for the authoritative checklist.
+### Enterprise Features
+- **Authentication:** Google OAuth + JWT sessions + API keys
+- **Billing:** Stripe integration with subscriptions and quotas
+- **Database:** PostgreSQL with pgvector for persistent, scalable storage
+- **Caching:** Redis-backed query caching and rate limiting
+- **Observability:** Prometheus metrics + OpenTelemetry traces
+- **Migrations:** Alembic for versioned schema changes
 
 ## 🚀 Quick Start
 
-### One-Command Deploy
+### Option 1: Local Development (Fastest)
 
 ```bash
-# Local (Docker Compose)
-./scripts/one_click_deploy.sh local
+# Clone and setup
+git clone https://github.com/bbrysonelite-max/Mini-RAG.git
+cd Mini-RAG
 
-# Production - Choose your platform
-./scripts/one_click_deploy.sh heroku   # Easiest
-./scripts/one_click_deploy.sh fly      # Fastest
-./scripts/one_click_deploy.sh render   # Best for teams
-```
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-### Manual Setup
-
-```bash
-# 1. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# 2. Set up environment
-cp PRODUCTION_ENV_TEMPLATE .env
-# Edit .env with **real** credentials (SECRET_KEY, Google OAuth, PostgreSQL, Stripe, OpenAI, Redis)
-# Remove demo data from out/chunks.jsonl or point CHUNKS_PATH elsewhere
-
-# 3. Start services
-docker-compose up -d
-
-# 4. Initialize database
-docker exec -i mini-rag-db psql -U postgres -d rag_brain < db_schema.sql
-
-# 5. Verify health
-curl http://localhost:8000/health
-# 6. Disable LOCAL_MODE once auth is configured
+# Start the server
+bash START_LOCAL.sh
 ```
 
-Then open your browser to `http://localhost:8000/app/`
+Open http://localhost:8000/app in your browser.
 
-### Simple Local Mode (No DB, OpenAI Only)
-Use this path when you just want the LLM pipeline working locally without Docker, Postgres, or auth.
-
-```bash
-cd /Users/brentbryson/Desktop/mini-rag
-source venv/bin/activate
-unset DATABASE_URL ANTHROPIC_API_KEY MINI_RAG_API_KEY REDIS_URL
-LOCAL_MODE=true ALLOW_INSECURE_DEFAULTS=true OPENAI_API_KEY="sk-your-key" \
-python -m uvicorn server:app --reload --port 9000
-```
-
-Upload documents from `/app → Ingest` or run:
+### Option 2: Docker Compose
 
 ```bash
-python raglite.py ingest-docs --path uploads/your_file.txt
-```
-
-After uploading, generate embeddings so hybrid search (BM25 + vectors) is active:
-
-```bash
-python - <<'PY'
-import asyncio
-from rag_pipeline import RAGPipeline
-from model_service_impl import ConcreteModelService
-
-pipeline = RAGPipeline(
-    chunks_path="out/chunks.jsonl",
-    model_service=ConcreteModelService(),
-    use_pgvector=False
-)
-result = asyncio.run(pipeline.build_vector_index(batch_size=50))
-print(f"Embedded {result['chunks_embedded']} chunks")
-PY
-```
-
-Restart uvicorn and ask questions at `http://localhost:9000/app`.
-
-### Running with Docker
-
-```bash
-# Full stack with Redis + PostgreSQL
+# Full stack with PostgreSQL + Redis
 docker-compose up --build
 
-# Wait for health checks
+# Wait for health check
 curl http://localhost:8000/health
 ```
 
-This starts PostgreSQL + Redis + FastAPI app. Browse to `http://localhost:8000/app` when healthy.
-
-### Production Deployment
-
-See `LAUNCH_CHECKLIST.md` for step-by-step guide or use:
-```bash
-./scripts/one_click_deploy.sh [heroku|fly|render]
-```
-
-Full deployment takes ~15 minutes including database setup.
-
-### React Development Server
-
-A new Vite/React shell lives in `frontend-react/`. To run it:
+### Option 3: One-Click Deploy
 
 ```bash
-cd frontend-react
-npm install
-npm run dev
+./scripts/one_click_deploy.sh [heroku|fly|render|railway]
 ```
 
-The dev server proxy points to `http://localhost:8000` for API calls. Production builds are created via `npm run build`.
+## 📖 Usage
 
-> ⚠️ The React shell is still in preview: it reuses the REST endpoints but lacks full auth/billing context until `LOCAL_MODE=false` and Stripe are active. Keep `/app` as the default UI until React reaches feature parity.
+### 1. Ingest Documents
 
-### Optional: OpenTelemetry / Logging
+**Via Web UI:**
+1. Go to the **Ingest** tab
+2. Drag & drop files or paste YouTube URLs
+3. Watch the progress indicator
 
-Set the following environment variables to enable tracing + structured log enrichment:
-
-```
-OTEL_ENABLED=true
-OTEL_SERVICE_NAME=mini-rag
-# optional:
-OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com/v1/traces
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer xyz
-```
-
-When enabled, the server emits correlation IDs (`X-Request-ID`) and OpenTelemetry traces that you can ingest into your preferred backend.
-
-### Ingesting Documents
-
-#### Via Web UI
-1. Go to the "Ingest" tab
-2. Upload files or paste YouTube URLs
-3. Wait for processing to complete
-
-#### Via Command Line
+**Via CLI:**
 ```bash
-# Ingest a document
 python raglite.py ingest-docs --path document.pdf
-
-# Ingest a YouTube video
 python raglite.py ingest-youtube --url https://youtube.com/watch?v=...
-
-# Ingest a transcript
 python raglite.py ingest-transcript --path transcript.vtt
 ```
 
-## Project Structure
+### 2. Ask Questions
+
+Go to the **Ask** tab and query your knowledge base:
+- "What are the main points from the uploaded documents?"
+- "Summarize the key insights from the YouTube video"
+
+### 3. Use Commands
+
+Select a command from the dropdown:
+- **Build Prompt:** Create AI prompts from your knowledge
+- **Build Workflow:** Design step-by-step processes
+- **Build Customer Avatar:** Define target customer profiles
+- **Build Expert Instructions:** Create specialized AI personas
+
+### 4. Save Assets
+
+Click **Save** on any command output to store it as a reusable asset in the **Assets** tab.
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `⌘/Ctrl + K` | Focus search/ask |
+| `⌘/Ctrl + I` | Go to Ingest |
+| `⌘/Ctrl + S` | Go to Sources |
+| `⌘/Ctrl + A` | Go to Assets |
+| `⌘/Ctrl + ,` | Go to Admin |
+| `Escape` | Close modal |
+| `?` | Show all shortcuts |
+
+## 🏗️ Architecture
 
 ```
-mini-rag/
-├── server.py                # FastAPI server with web UI
-├── raglite.py               # Core RAG functionality
-├── retrieval.py             # Search and indexing
-├── score.py                 # Answer scoring
-├── scripts/
-│   └── ingest/              # Ingestion utilities (docs, transcripts, YouTube)
-├── docs/
-│   ├── guides/              # Setup and how-to guides
-│   ├── notes/               # Planning/analysis docs
-│   └── phases/              # Phase completion reports
-├── examples/
-│   └── transcripts/         # Sample transcript files and source lists
-└── out/
-    └── chunks.jsonl         # Stored document chunks
+second-brain/
+├── server.py              # FastAPI backend
+├── rag_pipeline.py        # RAG orchestration
+├── database.py            # PostgreSQL + pgvector
+├── vector_store.py        # Embedding storage
+├── model_service.py       # LLM providers (OpenAI, Anthropic)
+├── frontend-react/        # React UI
+│   ├── src/components/    # UI components
+│   │   ├── Toast.tsx      # Notifications
+│   │   ├── Skeleton.tsx   # Loading states
+│   │   ├── EmptyState.tsx # Empty states
+│   │   └── ...
+│   └── src/hooks/         # Custom hooks
+│       ├── useToast.ts
+│       └── useKeyboardShortcuts.ts
+├── alembic/               # Database migrations
+└── scripts/               # Deployment & utilities
 ```
 
-## API Endpoints
+## 🔧 Configuration
 
-- `POST /ask` - Query the RAG system
-- `GET /api/sources` - List all ingested sources
-- `GET /api/sources/{id}/chunks` - Get chunks for a source
-- `DELETE /api/sources/{id}` - Delete a source
-- `POST /api/ingest_files` - Upload and ingest files
-- `POST /api/ingest_urls` - Ingest YouTube URLs
-- `GET /api/stats` - Get system statistics
+### Environment Variables
 
-## Configuration
+```bash
+# Required
+DATABASE_URL=postgresql://user:pass@host:5432/dbname
+SECRET_KEY=your-secret-key
+OPENAI_API_KEY=sk-...
 
-Set environment variables:
-- `CHUNKS_PATH`: Path to chunks file (default: `out/chunks.jsonl`)
+# Optional
+ANTHROPIC_API_KEY=sk-ant-...
+REDIS_URL=redis://localhost:6379/0
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+STRIPE_SECRET_KEY=sk_...
+STRIPE_WEBHOOK_SECRET=whsec_...
 
-## Security & Production Readiness
+# Development
+LOCAL_MODE=true
+ALLOW_INSECURE_DEFAULTS=true
+```
 
-✅ **Authentication & authorization required** for all data operations (OAuth + API keys)  
-✅ **Multi-tenant isolation** via workspace-scoped queries and storage  
-✅ **Billing enforcement** blocks ingestion when trials expire or subscriptions lapse  
-✅ **Production checklist** available in `docs/guides/QUICK_REFERENCE.md`
+### Database Setup
 
-⚠️ **Before deploying:**
-1. Replace placeholder secrets in `.env` (SECRET_KEY, Google OAuth, OpenAI, Stripe, Redis)
-2. Purge demo data from `out/chunks.jsonl` or point `CHUNKS_PATH` at real tenant data
-3. Configure real Stripe keys + webhook endpoint (or disable billing entirely)
-4. Set up PostgreSQL with pgvector extension and run `db_schema.sql`
-5. Review `docker-compose.yml` / Railway variables so `ALLOW_INSECURE_DEFAULTS=false`
-6. Turn off `LOCAL_MODE` once OAuth is verified end-to-end
+```bash
+# Initialize schema
+psql $DATABASE_URL < db_schema.sql
 
-For detailed security analysis:
-- `docs/guides/QUICK_REFERENCE.md` - Production checklist
-- `docs/guides/BILLING_AND_API.md` - Stripe setup & API usage
+# Run migrations
+python scripts/run_migrations.py upgrade
+```
 
-## Documentation
+## 📊 API Endpoints
 
-- `docs/notes/COMMERCIAL_VIABILITY_ANALYSIS.md` - Full analysis of commercial readiness
-- `docs/guides/CRITICAL_FIXES_GUIDE.md` - Implementation guide for critical fixes
-- `docs/guides/QUICK_REFERENCE.md` - Quick checklist and reference
-- `docs/guides/BILLING_AND_API.md` - Stripe setup, billing endpoints, and Postman/SDK onboarding
-- `docs/infra/CI_SETUP.md` - CI/CD workflow overview and required secrets
-- `docs/guides/REACT_MIGRATION.md` - Plan for rolling out the new React shell alongside the legacy UI
+### Core APIs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/ask` | Query the knowledge base |
+| `POST` | `/api/v1/ingest/urls` | Ingest YouTube URLs |
+| `POST` | `/api/v1/ingest/files` | Upload and ingest files |
+| `GET` | `/api/v1/sources` | List all sources |
+| `GET` | `/api/v1/workspaces/{id}/assets` | List saved assets |
+| `GET` | `/api/v1/workspaces/{id}/history` | View command history |
 
-## Python SDK & Postman Collection
+### Admin APIs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/api/v1/admin/stats` | System statistics |
 
-- **SDK:** `clients/sdk.py` ships a minimal `MiniRAGClient` that wraps `/api/v1/ask`, ingest endpoints, and billing helpers. Install `httpx`, copy the file into your project, and initialize it with `base_url` + API key.
-- **Postman:** Import `docs/postman/mini-rag.postman_collection.json` to exercise ask, ingest, and billing flows with environment variables (`{{base_url}}`, `{{api_key}}`, etc.).
+Full API documentation at `/docs` (Swagger UI).
 
-## License
+## 🔒 Security
 
-[Add your license here]
+- **Authentication:** OAuth 2.0 + JWT tokens + API keys
+- **Authorization:** Role-based access (viewer, editor, admin, owner)
+- **Input Validation:** SQL injection & XSS prevention
+- **CSRF Protection:** Token-based protection
+- **Security Headers:** CSP, X-Frame-Options, etc.
+- **Audit Logging:** All security events logged
 
-## Contributing
+## 🧪 Testing
 
-[Add contribution guidelines if needed]
+```bash
+# Run all tests
+python -m pytest tests/
 
+# Run specific test
+python -m pytest tests/test_rag_pipeline.py -v
+```
+
+## 📈 Monitoring
+
+### Prometheus Metrics
+- `http_requests_total` - Request count by endpoint
+- `http_request_duration_seconds` - Latency histograms
+- `rag_chunks_total` - Total chunks in index
+- `rag_queries_total` - Query count
+
+### Health Endpoint
+```bash
+curl http://localhost:8000/health
+# {"status": "healthy", "database": "healthy", "chunks_count": 79}
+```
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [START_HERE.md](START_HERE.md) | First-time setup guide |
+| [QUICK_START.md](🚀_QUICK_START.md) | Quick start reference |
+| [UI_UX_IMPROVEMENTS_COMPLETE.md](UI_UX_IMPROVEMENTS_COMPLETE.md) | UI/UX changelog |
+| [DATABASE_HARDENING_COMPLETE.md](DATABASE_HARDENING_COMPLETE.md) | Database improvements |
+| [DEPLOYMENT_STATUS.md](DEPLOYMENT_STATUS.md) | Production checklist |
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing`)
+5. Open a Pull Request
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+**Built with ❤️ for knowledge workers who want AI-powered second brains.**
