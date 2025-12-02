@@ -573,6 +573,9 @@ async def _get_primary_workspace_id_for_user(user: Optional[Dict[str, Any]]) -> 
     user_id = user.get("user_id")
     if not user_id:
         return None
+    # Skip workspace resolution for LOCAL_MODE placeholder user (not a valid UUID)
+    if LOCAL_MODE and user_id == "local-dev-user":
+        return None
     try:
         workspace = await USER_SERVICE.get_primary_workspace(user_id)
         return workspace.get("id") if workspace else None
@@ -672,6 +675,13 @@ async def _resolve_auth_context(
                 "role": "admin",
             }
             logger.info("LOCAL_MODE: Using default local user for unauthenticated request")
+            # Skip workspace resolution for LOCAL_MODE - return early
+            set_request_context(
+                user_id="local-dev-user",
+                workspace_id=None,
+                organization_id=None,
+            )
+            return user, None, None
         else:
             raise HTTPException(
                 status_code=401,
