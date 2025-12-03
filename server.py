@@ -2350,11 +2350,34 @@ async def _ingest_urls_core(
     if total > 0:
         INDEX = None
         CHUNKS = []
-        try:
-            ensure_index(require=False)
-            logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
-        except Exception as e:
-            logger.warning("Failed to auto-rebuild index: %s", e)
+        if USE_DB_CHUNKS:
+            # Async reload from database
+            store = _get_vector_store()
+            if store:
+                try:
+                    chunks_from_db = await load_chunks_from_db(store)
+                    if chunks_from_db:
+                        with _index_lock:
+                            CHUNKS = chunks_from_db
+                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                            INDEX = SimpleIndex(CHUNKS)
+                        logger.info("Index reloaded from database after ingestion (%d total chunks)", len(CHUNKS))
+                    else:
+                        logger.warning("No chunks returned from database after ingestion")
+                        INDEX = SimpleIndex([])
+                except Exception as e:
+                    logger.warning("Failed to reload index from database: %s", e)
+                    INDEX = SimpleIndex([])
+            else:
+                logger.warning("Vector store not available for index reload")
+                INDEX = SimpleIndex([])
+        else:
+            # Legacy file-based reload
+            try:
+                ensure_index(require=False)
+                logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+            except Exception as e:
+                logger.warning("Failed to auto-rebuild index: %s", e)
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
 
@@ -4133,10 +4156,33 @@ async def _ingest_files_core(
     if total > 0:
         INDEX = None
         CHUNKS = []
-        try:
-            ensure_index(require=False)
-            logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
-        except Exception as e:
-            logger.warning("Failed to auto-rebuild index: %s", e)
+        if USE_DB_CHUNKS:
+            # Async reload from database
+            store = _get_vector_store()
+            if store:
+                try:
+                    chunks_from_db = await load_chunks_from_db(store)
+                    if chunks_from_db:
+                        with _index_lock:
+                            CHUNKS = chunks_from_db
+                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                            INDEX = SimpleIndex(CHUNKS)
+                        logger.info("Index reloaded from database after ingestion (%d total chunks)", len(CHUNKS))
+                    else:
+                        logger.warning("No chunks returned from database after ingestion")
+                        INDEX = SimpleIndex([])
+                except Exception as e:
+                    logger.warning("Failed to reload index from database: %s", e)
+                    INDEX = SimpleIndex([])
+            else:
+                logger.warning("Vector store not available for index reload")
+                INDEX = SimpleIndex([])
+        else:
+            # Legacy file-based reload
+            try:
+                ensure_index(require=False)
+                logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+            except Exception as e:
+                logger.warning("Failed to auto-rebuild index: %s", e)
 
     return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
