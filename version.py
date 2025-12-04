@@ -11,7 +11,7 @@ UPDATE THIS FILE WITH EVERY RELEASE
 
 VERSION = "1.0.0"
 BUILD_DATE = "2025-12-03"
-COMMIT_HASH = "7b307f0"  # Update with each release
+COMMIT_HASH = "4636ab4"  # Update with each release
 
 # Version info dict for API responses
 VERSION_INFO = {

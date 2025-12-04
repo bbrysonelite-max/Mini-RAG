@@ -11,7 +11,7 @@
 
 export const VERSION = '1.0.0';
 export const BUILD_DATE = '2025-12-03';
-export const COMMIT_HASH = '7b307f0'; // Update with each release
+export const COMMIT_HASH = '4636ab4'; // Update with each release
 
 // Semantic version info
 export const VERSION_INFO = {
