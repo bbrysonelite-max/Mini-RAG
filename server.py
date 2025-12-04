@@ -1559,6 +1559,79 @@ async def get_version():
     return VERSION_INFO
 
 
+# Legal Pages Routes
+def _render_markdown_page(md_path: str, title: str) -> HTMLResponse:
+    """Render a markdown file as an HTML page."""
+    try:
+        with open(md_path, 'r') as f:
+            content = f.read()
+        # Simple markdown to HTML (basic conversion)
+        import re
+        html_content = content
+        # Headers
+        html_content = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html_content, flags=re.MULTILINE)
+        html_content = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html_content, flags=re.MULTILINE)
+        html_content = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html_content, flags=re.MULTILINE)
+        # Bold
+        html_content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html_content)
+        # Links
+        html_content = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', html_content)
+        # Line breaks
+        html_content = html_content.replace('\n\n', '</p><p>').replace('\n', '<br>')
+        # Wrap in basic HTML
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} - Second Brain RAG</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #333; }}
+        h1 {{ color: #1a1a2e; border-bottom: 2px solid #4a90d9; padding-bottom: 0.5rem; }}
+        h2 {{ color: #2d3748; margin-top: 2rem; }}
+        h3 {{ color: #4a5568; }}
+        a {{ color: #4a90d9; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 0.5rem; text-align: left; }}
+        th {{ background: #f7f7f7; }}
+        hr {{ border: none; border-top: 1px solid #eee; margin: 2rem 0; }}
+        .back-link {{ margin-bottom: 2rem; display: block; }}
+    </style>
+</head>
+<body>
+    <a href="/app/" class="back-link">&larr; Back to App</a>
+    <p>{html_content}</p>
+</body>
+</html>"""
+        return HTMLResponse(content=html)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+
+@app.get("/legal/privacy")
+async def privacy_policy():
+    """Privacy Policy page."""
+    return _render_markdown_page("docs/legal/PRIVACY_POLICY.md", "Privacy Policy")
+
+
+@app.get("/legal/terms")
+async def terms_of_service():
+    """Terms of Service page."""
+    return _render_markdown_page("docs/legal/TERMS_OF_SERVICE.md", "Terms of Service")
+
+
+@app.get("/legal/cookies")
+async def cookie_policy():
+    """Cookie Policy page."""
+    return _render_markdown_page("docs/legal/COOKIE_POLICY.md", "Cookie Policy")
+
+
+@app.get("/faq")
+async def faq_page():
+    """FAQ page."""
+    return _render_markdown_page("docs/legal/FAQ.md", "Frequently Asked Questions")
+
+
 # OAuth Routes
 @app.get("/auth/google")
 async def google_auth(request: Request):
