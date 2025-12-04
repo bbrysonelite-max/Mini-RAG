@@ -1,9 +1,13 @@
+# CACHE BUSTER - Change this value to force Railway to rebuild from scratch
+# Last updated: 2025-12-04 v1.1.0
+ARG CACHE_BUST=v1.1.0
+
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend-react
 COPY frontend-react/package*.json ./
 RUN npm install --legacy-peer-deps
 COPY frontend-react .
-RUN npm run build
+RUN echo "Build version: ${CACHE_BUST}" && npm run build
 
 FROM python:3.11-slim AS base
 

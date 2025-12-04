@@ -14,4 +14,12 @@
    [Social media links placeholder]
    ```
 
+6. **VERSION CONTROL (MANDATORY):** Every push to main MUST update the version in `version.py`:
+   - Increment PATCH for bug fixes (e.g., 1.0.0 → 1.0.1)
+   - Increment MINOR for new features (e.g., 1.0.1 → 1.1.0)
+   - Update BUILD_DATE to current date
+   - Update COMMIT_HASH after committing
+   - The version MUST be visible in the app footer and at `/version` endpoint
+   - Never push without updating the version first
+
 
