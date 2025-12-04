@@ -1503,26 +1503,31 @@ def root(): return HTMLResponse('<meta http-equiv="refresh" content="0; url=/app
 async def health_check():
     """Health check endpoint for monitoring (public)."""
     try:
-        # Check if index exists
-        if os.path.exists(CHUNKS_PATH):
-            chunks_count = _count_lines(CHUNKS_PATH)
-            index_status = "healthy" if chunks_count > 0 else "empty"
-        else:
-            index_status = "not_found"
-            chunks_count = 0
-        
-        # Check database connection
+        # Check database connection and get chunk count from DB
         db_status = "not_configured"
+        db_chunks_count = 0
         if DB:
             try:
                 await DB.fetch_one("SELECT 1")
                 db_status = "healthy"
+                # Get actual chunk count from database
+                count_row = await DB.fetch_one("SELECT COUNT(*) as cnt FROM chunks")
+                db_chunks_count = count_row["cnt"] if count_row else 0
             except (ConnectionError, TimeoutError) as e:
                 logger.warning(f"Database health check failed (connection error): {e}")
                 db_status = "unhealthy"
             except Exception as e:
                 logger.error(f"Database health check failed: {e}", exc_info=True)
                 db_status = "unhealthy"
+        
+        # Check in-memory index (fallback for file-based mode)
+        file_chunks_count = 0
+        if os.path.exists(CHUNKS_PATH):
+            file_chunks_count = _count_lines(CHUNKS_PATH)
+        
+        # Use database count if available, otherwise file count
+        chunks_count = db_chunks_count if db_chunks_count > 0 else file_chunks_count
+        index_status = "healthy" if chunks_count > 0 else "empty"
         
         # Check LLM provider availability
         openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
@@ -1535,6 +1540,8 @@ async def health_check():
             "database": db_status,
             "index": index_status,
             "chunks_count": chunks_count,
+            "db_chunks": db_chunks_count,
+            "file_chunks": file_chunks_count,
             "auth_available": AUTH_AVAILABLE,
             "llm_available": llm_available,
             "openai_configured": openai_configured,
@@ -1557,6 +1564,39 @@ async def health_check():
 async def get_version():
     """Return application version information (public)."""
     return VERSION_INFO
+
+
+@app.get("/debug/db-status")
+async def db_status():
+    """Debug endpoint to check database state (public for troubleshooting)."""
+    if not DB:
+        return {"error": "Database not configured", "DATABASE_URL_SET": bool(os.environ.get("DATABASE_URL"))}
+    
+    try:
+        # Count all key tables
+        orgs = await DB.fetch_one("SELECT COUNT(*) as cnt FROM organizations")
+        workspaces = await DB.fetch_one("SELECT COUNT(*) as cnt FROM workspaces")
+        projects = await DB.fetch_one("SELECT COUNT(*) as cnt FROM projects")
+        sources = await DB.fetch_one("SELECT COUNT(*) as cnt FROM sources")
+        documents = await DB.fetch_one("SELECT COUNT(*) as cnt FROM documents")
+        chunks = await DB.fetch_one("SELECT COUNT(*) as cnt FROM chunks")
+        users = await DB.fetch_one("SELECT COUNT(*) as cnt FROM users")
+        
+        return {
+            "database": "connected",
+            "tables": {
+                "users": users["cnt"] if users else 0,
+                "organizations": orgs["cnt"] if orgs else 0,
+                "workspaces": workspaces["cnt"] if workspaces else 0,
+                "projects": projects["cnt"] if projects else 0,
+                "sources": sources["cnt"] if sources else 0,
+                "documents": documents["cnt"] if documents else 0,
+                "chunks": chunks["cnt"] if chunks else 0,
+            },
+            "DATABASE_URL_SET": bool(os.environ.get("DATABASE_URL")),
+        }
+    except Exception as e:
+        return {"error": str(e), "DATABASE_URL_SET": bool(os.environ.get("DATABASE_URL"))}
 
 
 # Legal Pages Routes

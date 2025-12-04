@@ -9,9 +9,9 @@ VERSIONING RULES:
 UPDATE THIS FILE WITH EVERY RELEASE
 """
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 BUILD_DATE = "2025-12-04"
-COMMIT_HASH = "22fab71"  # Updated after commit
+COMMIT_HASH = "fafda3f"  # Updated after commit
 
 # Version info dict for API responses
 VERSION_INFO = {
