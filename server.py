@@ -43,6 +43,7 @@ from correlation import (
 from logging_utils import configure_logging, AUDIT_LOG_PATH
 from telemetry import setup_tracing
 from telemetry import setup_tracing
+from version import VERSION_INFO
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
 import httpx
@@ -1550,6 +1551,13 @@ async def health_check():
         }
         asyncio.create_task(_ping_healthchecks(False, failure_payload))
         return failure_payload
+
+
+@app.get("/version")
+async def get_version():
+    """Return application version information (public)."""
+    return VERSION_INFO
+
 
 # OAuth Routes
 @app.get("/auth/google")

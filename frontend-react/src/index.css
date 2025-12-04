@@ -747,6 +747,14 @@ button:not(:disabled):active::before {
   margin: 0;
 }
 
+.footer-version {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin: 0.25rem 0 0 0;
+  font-family: monospace;
+}
+
 .footer-social {
   display: flex;
   gap: var(--space-sm);

@@ -1,4 +1,5 @@
 import { type FC } from 'react';
+import { VERSION_WITH_BUILD } from '../version';
 
 const Footer: FC = () => {
   const currentYear = new Date().getFullYear();
@@ -138,6 +139,9 @@ const Footer: FC = () => {
       <div className="footer-bottom">
         <p className="footer-copyright">
           © {currentYear} <strong>Alien Probe Reports</strong>. All rights reserved.
+        </p>
+        <p className="footer-version">
+          Version {VERSION_WITH_BUILD}
         </p>
         <div className="footer-social">
           <a 
