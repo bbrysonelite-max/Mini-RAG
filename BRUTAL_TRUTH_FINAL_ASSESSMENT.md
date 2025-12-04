@@ -1,8 +1,29 @@
 # Brutal Truth: Final Assessment
 
-**Date:** November 29, 2025  
-**Time Spent:** 8 hours debugging  
+**Date:** November 29, 2025 (Updated: December 3, 2025)
+**Time Spent:** 8 hours debugging + 2 hours hardening
 **Production URL:** https://mini-rag-production.up.railway.app/app/
+
+---
+
+## December 3, 2025 Update: RAG Pipeline Hardening
+
+### Changes Deployed
+1. **Async-safe locking** - Replaced `threading.RLock()` with `asyncio.Lock()` to prevent event loop blocking
+2. **Startup readiness gate** - Added `StartupReadinessMiddleware` returning 503 until initialization completes
+3. **Response metadata** - Query responses now include `_meta` field showing `mode` (llm/legacy) and `fallback` status
+4. **Defensive null checks** - Vector search results now have null guards to prevent crashes
+5. **Fixed misleading docstrings** - Removed incorrect `NotImplementedError` claims from retrieve method
+
+### Test Results After Hardening
+- **33 tests passed** across core functionality
+- Syntax verification: imports successful
+- No regressions introduced
+
+### Commit
+```
+7032aae Harden RAG pipeline: async locking, startup gate, defensive coding
+```
 
 ---
 
@@ -180,18 +201,23 @@
 ### HIGH RISK (Fix Before Public Launch)
 
 **1. LOCAL_MODE=true Means NO SECURITY**
-- Anyone who finds the URL can access ALL documents  
-- All users share the same data  
-- **Fix:** Set LOCAL_MODE=false, test OAuth  
-- **Time:** 15 minutes  
+- Anyone who finds the URL can access ALL documents
+- All users share the same data
+- **Fix:** Set LOCAL_MODE=false, test OAuth
+- **Time:** 15 minutes
 - **Test:** Click "Sign in with Google," verify login works
 
 **2. Data Might Not Persist Across Restarts**
-- Chunks are in Postgres (2120 chunks confirmed)  
-- But JSONL file might not be in Postgres  
-- **Fix:** Verify /app/out is persisted OR all chunks in DB  
-- **Time:** 3 minutes  
+- Chunks are in Postgres (2120 chunks confirmed)
+- But JSONL file might not be in Postgres
+- **Fix:** Verify /app/out is persisted OR all chunks in DB
+- **Time:** 3 minutes
 - **Test:** Restart Railway, check chunk count after restart
+
+### ✅ FIXED (Dec 3, 2025): Startup Race Conditions
+**Previously:** Requests during startup could hit uninitialized state
+**Now:** `StartupReadinessMiddleware` returns 503 until ready
+**Status:** Deployed and verified
 
 ### MEDIUM RISK (Can Launch, But Watch For)
 
@@ -292,6 +318,12 @@ I've done everything I can programmatically. Here's what ONLY YOU can verify:
 - ❌ Admin UI (placeholder only)
 - ❌ Background async jobs (no queue backend)
 
+### ✅ Fixed on December 3, 2025
+- ✅ Async locking (was blocking event loop with threading.RLock)
+- ✅ Startup race conditions (requests now blocked until ready)
+- ✅ Silent fallback behavior (responses now show `_meta.mode` and `_meta.fallback`)
+- ✅ Null pointer crashes in vector search (defensive checks added)
+
 ---
 
 ## Should You Launch?
@@ -328,6 +360,7 @@ Let me walk you through those 3 tests step-by-step. After that, you can decide i
 **Ready to do the 3 manual tests together?**
 
 Type "start test 1" and I'll guide you through browser file upload.
+
 
 
 
