@@ -120,9 +120,20 @@ MODEL_SERVICE = None
 RAG_PIPELINE: Optional[RAGPipeline] = None
 _chunk_count_cache: Optional[int] = None
 _chunk_count_stamp: Optional[float] = None
-# Thread-safe lock for INDEX and CHUNKS updates
-import threading
-_index_lock = threading.RLock()
+# Async-safe lock for INDEX and CHUNKS updates
+# Note: asyncio.Lock() must be created after the event loop starts, so we use a lazy init pattern
+import asyncio
+_index_lock: Optional[asyncio.Lock] = None
+
+def _get_index_lock() -> asyncio.Lock:
+    """Get or create the async index lock. Must be called from async context."""
+    global _index_lock
+    if _index_lock is None:
+        _index_lock = asyncio.Lock()
+    return _index_lock
+
+# Startup readiness flag - prevents requests during initialization
+_startup_complete = False
 try:
     RAG_MAX_TOKENS = int(os.getenv("RAG_MAX_TOKENS", "512"))
 except ValueError:
@@ -392,6 +403,37 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+class StartupReadinessMiddleware(BaseHTTPMiddleware):
+    """Reject requests until startup is complete to prevent race conditions."""
+
+    # Paths that should work even before startup is complete
+    ALLOWED_PATHS = {"/health", "/healthz", "/ready", "/metrics", "/docs", "/redoc", "/openapi.json"}
+
+    async def dispatch(self, request: Request, call_next):
+        # Allow health checks and docs before startup completes
+        if request.url.path in self.ALLOWED_PATHS or request.url.path.startswith("/docs"):
+            return await call_next(request)
+
+        if not _startup_complete:
+            logger.warning(
+                "Request rejected during startup: %s %s",
+                request.method,
+                request.url.path,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "Service Unavailable",
+                    "message": "Server is still initializing. Please retry in a few seconds.",
+                },
+                headers={"Retry-After": "5"},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(StartupReadinessMiddleware)
 
 
 # Prometheus metrics for request/ingest observability
@@ -1204,7 +1246,7 @@ async def startup_event():
                 chunks_from_db = await load_chunks_from_db(store)
                 if chunks_from_db:
                     global INDEX, CHUNKS, CHUNK_ID_MAP
-                    with _index_lock:
+                    async with _get_index_lock():
                         CHUNKS = chunks_from_db
                         CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
                         INDEX = SimpleIndex(CHUNKS)
@@ -1251,6 +1293,11 @@ async def startup_event():
             logging.getLogger(__name__).info("Engine configuration loaded successfully")
         except Exception as e:
             logging.getLogger(__name__).warning(f"Failed to load engine configuration: {e}")
+
+    # Mark startup complete - requests can now be served
+    global _startup_complete
+    _startup_complete = True
+    logger.info("Startup complete - server ready to accept requests")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1339,70 +1386,75 @@ def require_admin(user: Optional[Dict[str, Any]], api_key: Optional[APIKeyPrinci
         )
 
 def ensure_index(require: bool = True):
-    """Load or build the search index.
-    
+    """Load or build the search index (sync version for legacy/file-based mode).
+
     Args:
         require: If True, raise IndexNotFoundError when no chunks exist.
                  If False, gracefully handle empty state (for startup).
+
+    Note: This is a sync function for backwards compatibility. For database-backed
+    chunks, the async startup_event handles initialization with proper locking.
+    File-based loading is idempotent so doesn't require strict locking.
     """
     global INDEX, CHUNKS, CHUNK_ID_MAP
-    with _index_lock:
-        if INDEX is None:
-            # Check if we should load from database or file
-            if USE_DB_CHUNKS:
-                # Load from database - this is handled async in startup_event
-                # For sync context, we'll skip and let startup handle it
+    # No lock needed here - file loading is idempotent and database mode
+    # uses async locking in startup_event and ingestion endpoints
+    if INDEX is None:
+        # Check if we should load from database or file
+        if USE_DB_CHUNKS:
+            # Load from database - this is handled async in startup_event
+            # For sync context, we'll skip and let startup handle it
+            if require:
+                logger.error("Index not loaded from database yet")
+                raise IndexNotFoundError("Index not found. Please wait for initialization or ingest documents first.")
+            else:
+                logger.info("Database chunks will be loaded asynchronously during startup")
+                CHUNKS = []
+                INDEX = SimpleIndex([])
+                return
+        else:
+            # Load from file (legacy mode)
+            if not os.path.exists(CHUNKS_PATH):
                 if require:
-                    logger.error("Index not loaded from database yet")
-                    raise IndexNotFoundError("Index not found. Please wait for initialization or ingest documents first.")
+                    logger.error(f"Index not found at {CHUNKS_PATH}")
+                    raise IndexNotFoundError("Index not found. Please ingest documents first.")
                 else:
-                    logger.info("Database chunks will be loaded asynchronously during startup")
+                    logger.warning(f"No chunks file at {CHUNKS_PATH} - starting with empty index")
                     CHUNKS = []
                     INDEX = SimpleIndex([])
                     return
-            else:
-                # Load from file (legacy mode)
-                if not os.path.exists(CHUNKS_PATH):
-                    if require:
-                        logger.error(f"Index not found at {CHUNKS_PATH}")
-                        raise IndexNotFoundError("Index not found. Please ingest documents first.")
-                    else:
-                        logger.warning(f"No chunks file at {CHUNKS_PATH} - starting with empty index")
-                        CHUNKS = []
-                        INDEX = SimpleIndex([])
-                        return
-                try:
-                    CHUNKS = load_chunks(CHUNKS_PATH)
-                    CHUNK_ID_MAP = {
-                        chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
-                    }
-                except Exception as e:
-                    logger.error(f"Failed to load chunks: {e}", exc_info=True)
-                    if require:
-                        raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
-                    else:
-                        CHUNKS = []
-                        INDEX = SimpleIndex([])
-                        return
-            
-            if not CHUNKS:
+            try:
+                CHUNKS = load_chunks(CHUNKS_PATH)
+                CHUNK_ID_MAP = {
+                    chunk.get("id"): chunk for chunk in CHUNKS if chunk.get("id")
+                }
+            except Exception as e:
+                logger.error(f"Failed to load chunks: {e}", exc_info=True)
                 if require:
-                    raise IndexNotFoundError("Index is empty. Please ingest documents first.")
+                    raise IndexNotFoundError("Failed to load index. Please try rebuilding.")
                 else:
-                    logger.warning("No chunks loaded - starting with empty index")
+                    CHUNKS = []
                     INDEX = SimpleIndex([])
                     return
-            
-            try:
-                INDEX = SimpleIndex(CHUNKS)
-                logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
-                _refresh_rag_pipeline_index()
-            except Exception as e:
-                logger.error(f"Failed to build index: {e}", exc_info=True)
-                if require:
-                    raise IndexNotFoundError("Failed to build search index.")
-                else:
-                    INDEX = SimpleIndex([])
+
+        if not CHUNKS:
+            if require:
+                raise IndexNotFoundError("Index is empty. Please ingest documents first.")
+            else:
+                logger.warning("No chunks loaded - starting with empty index")
+                INDEX = SimpleIndex([])
+                return
+
+        try:
+            INDEX = SimpleIndex(CHUNKS)
+            logger.info("Search index rebuilt", extra={"chunks": len(CHUNKS)})
+            _refresh_rag_pipeline_index()
+        except Exception as e:
+            logger.error(f"Failed to build index: {e}", exc_info=True)
+            if require:
+                raise IndexNotFoundError("Failed to build search index.")
+            else:
+                INDEX = SimpleIndex([])
 
 
 def _init_model_service():
@@ -1851,9 +1903,15 @@ async def _process_query_async(
     command: Optional[str] = None,
     workspace_default_engine: Optional[str] = None,
 ):
-    """Prefer the LLM pipeline when configured, but fall back to the legacy answer."""
+    """Prefer the LLM pipeline when configured, but fall back to the legacy answer.
+
+    Returns a dict with the answer and metadata including:
+    - mode: "llm" or "legacy" indicating which pipeline was used
+    - fallback: True if we fell back from LLM to legacy due to an error
+    - fallback_reason: The error message if fallback occurred
+    """
     ensure_index()
-    
+
     # If command is provided, use command handler to get system prompt
     system_prompt_override = None
     if command and COMMAND_HANDLERS_AVAILABLE and handle_command:
@@ -1862,13 +1920,37 @@ async def _process_query_async(
             system_prompt_override = await handle_command(command, query, workspace_id, workspace_default_engine, context)
         except Exception as e:
             logger.warning(f"Command handler failed for '{command}': {e}")
-    
+
     if RAG_PIPELINE and MODEL_SERVICE:
         try:
-            return await _process_query_with_llm(query, k, user, workspace_id, system_prompt=system_prompt_override)
+            result = await _process_query_with_llm(query, k, user, workspace_id, system_prompt=system_prompt_override)
+            # Add metadata about the processing mode
+            result["_meta"] = {
+                "mode": "llm",
+                "fallback": False,
+                "model_available": True,
+            }
+            return result
         except Exception as exc:
             logger.warning("LLM pipeline failed, falling back to chunk mode: %s", exc, exc_info=True)
-    return _process_query_legacy(query, k, user, workspace_id)
+            result = _process_query_legacy(query, k, user, workspace_id)
+            # Add metadata about the fallback
+            result["_meta"] = {
+                "mode": "legacy",
+                "fallback": True,
+                "fallback_reason": str(exc),
+                "model_available": True,
+            }
+            return result
+
+    # LLM not available - use legacy mode directly (not a fallback)
+    result = _process_query_legacy(query, k, user, workspace_id)
+    result["_meta"] = {
+        "mode": "legacy",
+        "fallback": False,
+        "model_available": False,
+    }
+    return result
 
 
 async def _process_query_with_llm(
@@ -2357,7 +2439,7 @@ async def _ingest_urls_core(
                 try:
                     chunks_from_db = await load_chunks_from_db(store)
                     if chunks_from_db:
-                        with _index_lock:
+                        async with _get_index_lock():
                             CHUNKS = chunks_from_db
                             CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
                             INDEX = SimpleIndex(CHUNKS)
@@ -4163,7 +4245,7 @@ async def _ingest_files_core(
                 try:
                     chunks_from_db = await load_chunks_from_db(store)
                     if chunks_from_db:
-                        with _index_lock:
+                        async with _get_index_lock():
                             CHUNKS = chunks_from_db
                             CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
                             INDEX = SimpleIndex(CHUNKS)

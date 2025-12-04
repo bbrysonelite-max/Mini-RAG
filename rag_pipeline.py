@@ -276,33 +276,20 @@ class RAGPipeline:
     async def retrieve(self, opts: RetrieveOptions) -> RetrieveResult:
         """
         Retrieve relevant chunks using hybrid search.
-        
+
         Steps:
         1. Candidate Retrieval: BM25 + vector similarity
         2. Merge & Dedupe: Combine results, remove duplicates
         3. Optional Re-ranking: Use ModelService.rerank if enabled
         4. Filter & Truncate: Apply filters, limit to maxChunksForContext
         5. Abstention check: Return empty if relevance too low
-        
+
         Args:
             opts: Retrieval options including projectId, query, filters
-            
+
         Returns:
             RetrieveResult with chunks, scores, and metadata
-            
-        Raises:
-            NotImplementedError: This is a skeleton - not yet implemented
         """
-        # Skeleton implementation - returns empty result
-        # In real implementation, this would:
-        # 1. Query BM25 index for topK_bm25 chunks
-        # 2. Query vector store for topK_vector chunks
-        # 3. Merge and dedupe by chunk.id
-        # 4. Optionally rerank using model_service.rerank()
-        # 5. Apply filters (projectId, source_type, confidentiality)
-        # 6. Truncate to maxChunksForContext
-        # 7. Check relevance threshold and abstain if needed
-        
         project_id = opts.get('projectId', '')
         query = opts.get('userQuery', '')
         filters = opts.get('filters', {})
@@ -443,7 +430,9 @@ class RAGPipeline:
             
             # Convert to ChunkWithScore format
             candidates = []
-            for result in results:
+            for result in results or []:
+                if not result or 'id' not in result:
+                    continue
                 db_chunk_id = str(result['id'])
                 raw_chunk = self.db_chunk_map.get(db_chunk_id)
                 if not raw_chunk:
@@ -462,9 +451,10 @@ class RAGPipeline:
                         tags.append(project_tag)
                 chunk['tags'] = tags
                 
+                similarity = result.get('similarity', 0.0)
                 candidates.append(ChunkWithScore(
                     chunk=chunk,
-                    score=float(result['similarity']),
+                    score=float(similarity) if similarity is not None else 0.0,
                     source='vector'
                 ))
             

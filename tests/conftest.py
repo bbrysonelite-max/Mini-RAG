@@ -13,3 +13,7 @@ if PROJECT_ROOT_STR not in sys.path:
     # remain importable when pytest adjusts the working directory.
     sys.path.insert(0, PROJECT_ROOT_STR)
 
+# Mark startup as complete for tests to bypass StartupReadinessMiddleware
+import server
+server._startup_complete = True
+
