@@ -310,7 +310,62 @@ async def _check_workspace_membership(
     return membership
 
 
+async def _reload_chunks_from_db() -> int:
+    """
+    Reload chunks from database into memory and update RAG pipeline.
+    
+    This is the CRITICAL function that ensures all systems stay in sync:
+    - Global CHUNKS array (for legacy lookups)
+    - Global INDEX (for BM25 search)
+    - RAG_PIPELINE.chunks (for hybrid retrieval)
+    
+    Returns:
+        Number of chunks loaded, or 0 if failed
+    """
+    global INDEX, CHUNKS, CHUNK_ID_MAP, RAG_PIPELINE
+    
+    if not USE_DB_CHUNKS:
+        logger.debug("_reload_chunks_from_db: skipped (USE_DB_CHUNKS=False)")
+        return 0
+    
+    store = _get_vector_store()
+    if not store:
+        logger.error("Vector store not available for chunk reload")
+        return 0
+    
+    try:
+        chunks_from_db = await load_chunks_from_db(store)
+        
+        async with _get_index_lock():
+            CHUNKS = chunks_from_db or []
+            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+            INDEX = SimpleIndex(CHUNKS)
+        
+        # CRITICAL: Update RAG pipeline with new chunks
+        if RAG_PIPELINE:
+            RAG_PIPELINE.set_chunks(CHUNKS)
+            logger.info(f"✓ RAG pipeline updated with {len(CHUNKS)} chunks")
+        else:
+            logger.warning("RAG pipeline not initialized - chunks loaded but pipeline needs restart")
+        
+        logger.info(f"✓ Reloaded {len(CHUNKS)} chunks from database")
+        return len(CHUNKS)
+    
+    except Exception as e:
+        logger.error(f"✗ Failed to reload chunks from database: {e}", exc_info=True)
+        CHUNKS = []
+        INDEX = SimpleIndex([])
+        if RAG_PIPELINE:
+            RAG_PIPELINE.set_chunks([])
+        return 0
+
+
 async def _persist_chunks_to_db() -> None:
+    """Legacy function for file-based mode only. In DB mode, chunks are already persisted."""
+    if USE_DB_CHUNKS:
+        logger.debug("_persist_chunks_to_db: skipped (USE_DB_CHUNKS=True, chunks already in database)")
+        return
+    
     store = _get_vector_store()
     if not store:
         return
@@ -1618,6 +1673,58 @@ async def llm_status():
     }
 
 
+@app.get("/debug/chunk-status")
+async def chunk_status():
+    """Debug endpoint to verify chunk state across all systems."""
+    db_count = 0
+    if DB:
+        try:
+            count_row = await DB.fetch_one("SELECT COUNT(*) as cnt FROM chunks")
+            db_count = count_row["cnt"] if count_row else 0
+        except Exception as e:
+            db_count = f"error: {str(e)}"
+    
+    chunks_match = False
+    if isinstance(db_count, int):
+        rag_chunks = len(RAG_PIPELINE.chunks) if RAG_PIPELINE else 0
+        chunks_match = db_count == len(CHUNKS) == rag_chunks
+    
+    return {
+        "USE_DB_CHUNKS": USE_DB_CHUNKS,
+        "database_chunks": db_count,
+        "memory_chunks": len(CHUNKS),
+        "rag_pipeline_chunks": len(RAG_PIPELINE.chunks) if RAG_PIPELINE else 0,
+        "index_chunks": len(INDEX.chunks) if INDEX else 0,
+        "MODEL_SERVICE_available": MODEL_SERVICE is not None,
+        "RAG_PIPELINE_available": RAG_PIPELINE is not None,
+        "chunks_in_sync": chunks_match,
+        "diagnosis": _diagnose_chunk_state(db_count, len(CHUNKS), len(RAG_PIPELINE.chunks) if RAG_PIPELINE else 0)
+    }
+
+
+def _diagnose_chunk_state(db_count, mem_count, rag_count):
+    """Provide helpful diagnosis of chunk synchronization state."""
+    if isinstance(db_count, str):  # Error getting DB count
+        return f"⚠️ Database error: {db_count}"
+    
+    if db_count == 0 and mem_count == 0 and rag_count == 0:
+        return "✓ System is empty - no data ingested yet"
+    
+    if db_count > 0 and mem_count == 0:
+        return "⚠️ CRITICAL: Data in database but NOT loaded to memory! Server restart needed or reload failed."
+    
+    if db_count > 0 and mem_count > 0 and rag_count == 0:
+        return "⚠️ CRITICAL: Data in database and memory, but RAG pipeline has NO chunks! RAG pipeline needs update."
+    
+    if db_count == mem_count == rag_count and db_count > 0:
+        return f"✓ All systems in sync with {db_count} chunks"
+    
+    if db_count != mem_count or mem_count != rag_count:
+        return f"⚠️ Out of sync: DB={db_count}, Memory={mem_count}, RAG={rag_count}. Try reloading."
+    
+    return "Unknown state"
+
+
 # Legal Pages Routes
 def _render_markdown_page(md_path: str, title: str) -> HTMLResponse:
     """Render a markdown file as an HTML page."""
@@ -2598,44 +2705,28 @@ async def _ingest_urls_core(
             chunk_delta=total,
             current_chunk_total=current_chunk_total,
         )
-    global _chunk_count_cache, _chunk_count_stamp, INDEX, CHUNKS
+    global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
     _chunk_count_stamp = None
     
     # Auto-rebuild index after ingestion
     if total > 0:
-        INDEX = None
-        CHUNKS = []
         if USE_DB_CHUNKS:
-            # Async reload from database
-            store = _get_vector_store()
-            if store:
-                try:
-                    chunks_from_db = await load_chunks_from_db(store)
-                    if chunks_from_db:
-                        async with _get_index_lock():
-                            CHUNKS = chunks_from_db
-                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
-                            INDEX = SimpleIndex(CHUNKS)
-                        logger.info("Index reloaded from database after ingestion (%d total chunks)", len(CHUNKS))
-                    else:
-                        logger.warning("No chunks returned from database after ingestion")
-                        INDEX = SimpleIndex([])
-                except Exception as e:
-                    logger.warning("Failed to reload index from database: %s", e)
-                    INDEX = SimpleIndex([])
-            else:
-                logger.warning("Vector store not available for index reload")
-                INDEX = SimpleIndex([])
+            # Use standardized reload function
+            reloaded = await _reload_chunks_from_db()
+            logger.info(f"Ingestion complete: added {total} chunks, total now {reloaded}")
         else:
             # Legacy file-based reload
+            global INDEX, CHUNKS
+            INDEX = None
+            CHUNKS = []
             try:
                 ensure_index(require=False)
-                logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+                logger.info(f"Index auto-rebuilt after ingestion ({total} chunks added)")
             except Exception as e:
-                logger.warning("Failed to auto-rebuild index: %s", e)
+                logger.warning(f"Failed to auto-rebuild index: {e}")
 
-    return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
+    return {"results": results, "total_written": total, "count": len(CHUNKS)}
 
 @app.post(
     "/api/ingest_files",
@@ -4071,19 +4162,16 @@ async def paste_document(request: Request, workspace_id: str):
         
         chunks_added = result.get("written", 0)
         
-        # Rebuild index
-        global INDEX, CHUNKS
-        INDEX = None
-        CHUNKS = []
-        ensure_index(require=False)
-        
-        # Persist to database if available
+        # Reload chunks from database (includes newly added chunks)
+        # This is CRITICAL - without this, all chunks are lost from memory!
         if chunks_added > 0:
-            await _persist_chunks_to_db()
+            reloaded_count = await _reload_chunks_from_db()
+            logger.info(f"Paste ingestion: added {chunks_added} chunks, total now {reloaded_count}")
         
         return {
             "message": f"Document '{title}' ingested successfully",
             "chunks_added": chunks_added,
+            "total_chunks": len(CHUNKS),
             "title": title
         }
     finally:
@@ -4464,41 +4552,25 @@ async def _ingest_files_core(
             chunk_delta=total,
             current_chunk_total=current_chunk_total,
         )
-    global _chunk_count_cache, _chunk_count_stamp, INDEX, CHUNKS
+    global _chunk_count_cache, _chunk_count_stamp
     _chunk_count_cache = None
     _chunk_count_stamp = None
     
     # Auto-rebuild index after ingestion
     if total > 0:
-        INDEX = None
-        CHUNKS = []
         if USE_DB_CHUNKS:
-            # Async reload from database
-            store = _get_vector_store()
-            if store:
-                try:
-                    chunks_from_db = await load_chunks_from_db(store)
-                    if chunks_from_db:
-                        async with _get_index_lock():
-                            CHUNKS = chunks_from_db
-                            CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
-                            INDEX = SimpleIndex(CHUNKS)
-                        logger.info("Index reloaded from database after ingestion (%d total chunks)", len(CHUNKS))
-                    else:
-                        logger.warning("No chunks returned from database after ingestion")
-                        INDEX = SimpleIndex([])
-                except Exception as e:
-                    logger.warning("Failed to reload index from database: %s", e)
-                    INDEX = SimpleIndex([])
-            else:
-                logger.warning("Vector store not available for index reload")
-                INDEX = SimpleIndex([])
+            # Use standardized reload function
+            reloaded = await _reload_chunks_from_db()
+            logger.info(f"Ingestion complete: added {total} chunks, total now {reloaded}")
         else:
             # Legacy file-based reload
+            global INDEX, CHUNKS
+            INDEX = None
+            CHUNKS = []
             try:
                 ensure_index(require=False)
-                logger.info("Index auto-rebuilt after ingestion (%d chunks added)", total)
+                logger.info(f"Index auto-rebuilt after ingestion ({total} chunks added)")
             except Exception as e:
-                logger.warning("Failed to auto-rebuild index: %s", e)
+                logger.warning(f"Failed to auto-rebuild index: {e}")
 
-    return {"results": results, "total_written": total, "count": _count_lines(CHUNKS_PATH)}
+    return {"results": results, "total_written": total, "count": len(CHUNKS)}
