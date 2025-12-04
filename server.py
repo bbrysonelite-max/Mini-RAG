@@ -1523,12 +1523,22 @@ async def health_check():
                 logger.error(f"Database health check failed: {e}", exc_info=True)
                 db_status = "unhealthy"
         
+        # Check LLM provider availability
+        openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
+        anthropic_configured = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        cohere_configured = bool(os.environ.get("COHERE_API_KEY"))
+        llm_available = openai_configured or anthropic_configured
+        
         response = {
             "status": "healthy",
             "database": db_status,
             "index": index_status,
             "chunks_count": chunks_count,
-            "auth_available": AUTH_AVAILABLE
+            "auth_available": AUTH_AVAILABLE,
+            "llm_available": llm_available,
+            "openai_configured": openai_configured,
+            "anthropic_configured": anthropic_configured,
+            "cohere_configured": cohere_configured,
         }
         asyncio.create_task(_ping_healthchecks(True, response))
         return response
@@ -1932,25 +1942,49 @@ async def _process_query_async(
             }
             return result
         except Exception as exc:
-            logger.warning("LLM pipeline failed, falling back to chunk mode: %s", exc, exc_info=True)
-            result = _process_query_legacy(query, k, user, workspace_id)
-            # Add metadata about the fallback
-            result["_meta"] = {
-                "mode": "legacy",
-                "fallback": True,
-                "fallback_reason": str(exc),
-                "model_available": True,
+            # DO NOT silently fall back to raw chunks - that's useless garbage
+            # Instead, return a clear error so the user knows what's wrong
+            error_msg = str(exc)
+            logger.error("LLM pipeline failed: %s", exc, exc_info=True)
+            
+            # Provide helpful error messages based on the failure type
+            if "API key" in error_msg or "not available" in error_msg.lower():
+                user_message = "No LLM configured. Please add your API key in Settings (OpenAI or Anthropic)."
+            elif "rate limit" in error_msg.lower():
+                user_message = "Rate limit exceeded. Please wait a moment and try again."
+            elif "timeout" in error_msg.lower():
+                user_message = "Request timed out. The LLM took too long to respond."
+            else:
+                user_message = f"LLM error: {error_msg}"
+            
+            return {
+                "answer": f"⚠️ ERROR: {user_message}",
+                "chunks": [],
+                "score": {"error": 0.0},
+                "_meta": {
+                    "mode": "error",
+                    "error": True,
+                    "error_type": "llm_failure",
+                    "error_message": user_message,
+                    "error_details": error_msg,
+                    "model_available": True,
+                },
             }
-            return result
 
-    # LLM not available - use legacy mode directly (not a fallback)
-    result = _process_query_legacy(query, k, user, workspace_id)
-    result["_meta"] = {
-        "mode": "legacy",
-        "fallback": False,
-        "model_available": False,
+    # LLM not available - return clear error, NOT garbage chunks
+    logger.warning("No LLM configured - MODEL_SERVICE or RAG_PIPELINE not initialized")
+    return {
+        "answer": "⚠️ ERROR: No LLM configured. Please add your API key in Settings to enable AI-powered answers.",
+        "chunks": [],
+        "score": {"error": 0.0},
+        "_meta": {
+            "mode": "error",
+            "error": True,
+            "error_type": "no_llm",
+            "error_message": "No LLM configured. Add your OpenAI or Anthropic API key in Settings.",
+            "model_available": False,
+        },
     }
-    return result
 
 
 async def _process_query_with_llm(
@@ -3049,6 +3083,44 @@ async def rebuild_index(request: Request):
 
     return await _run_rebuild()
 api_v1.post("/rebuild")(rebuild_index)
+
+@app.post("/api/generate_embeddings")
+@app.post("/generate_embeddings")
+async def generate_embeddings(request: Request):
+    """
+    Generate vector embeddings for all chunks.
+    
+    This enables hybrid search (BM25 + semantic vectors) for better retrieval quality.
+    Cost: ~$0.01 per 1000 chunks with OpenAI text-embedding-3-small.
+    """
+    _, workspace_id, _ = await _resolve_auth_context(request, scopes=("write",), require=True)
+    
+    if not RAG_PIPELINE:
+        raise HTTPException(status_code=503, detail="RAG pipeline not initialized")
+    
+    if not MODEL_SERVICE:
+        raise HTTPException(status_code=503, detail="Model service not available - check OPENAI_API_KEY")
+    
+    try:
+        result = await RAG_PIPELINE.build_vector_index()
+        _log_event(
+            "embeddings.generated",
+            workspace_id=workspace_id,
+            chunks_embedded=result.get("chunks_embedded", 0),
+            errors=result.get("errors", 0),
+        )
+        return {
+            "status": "success",
+            "chunks_embedded": result.get("chunks_embedded", 0),
+            "errors": result.get("errors", 0),
+            "storage_type": result.get("storage_type", "memory"),
+            "message": "Vector embeddings generated. Hybrid search is now enabled."
+        }
+    except Exception as e:
+        logger.error(f"Failed to generate embeddings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+api_v1.post("/generate_embeddings")(generate_embeddings)
 
 # Admin-only endpoints
 @app.get("/api/admin/users")

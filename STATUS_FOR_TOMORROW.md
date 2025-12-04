@@ -62,3 +62,4 @@ railway connect postgres
 Three days of debugging is intense. The core app works. The schema issue is fixable in 5 minutes tomorrow. Get some sleep.
 
 
+

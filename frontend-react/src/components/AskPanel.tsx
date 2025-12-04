@@ -55,7 +55,7 @@ export const AskPanel = ({ workspaceId }: AskPanelProps) => {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveTitle, setSaveTitle] = useState('');
   const questionInputRef = useRef<HTMLTextAreaElement>(null);
-  const maxRefinementLevel = 3;
+  const maxRefinementLevel = 50; // Effectively unlimited conversation turns
 
   const currentCommand = COMMANDS.find(c => c.value === selectedCommand) || COMMANDS[0];
 
@@ -79,9 +79,20 @@ export const AskPanel = ({ workspaceId }: AskPanelProps) => {
     setError(null);
     setLoading(true);
     const currentQuestion = question;
+    
+    // Build query with conversation context for better retrieval
+    let enrichedQuery = currentQuestion;
+    if (conversation.length > 0) {
+      // Include last 2 Q&A pairs as context for retrieval
+      const recentContext = conversation.slice(-2).map(msg => 
+        `Q: ${msg.question}\nA: ${msg.answer.substring(0, 200)}...`
+      ).join('\n\n');
+      enrichedQuery = `[Previous context:\n${recentContext}]\n\nCurrent question: ${currentQuestion}`;
+    }
+    
     const body = new FormData();
-    body.append('query', currentQuestion);
-    body.append('k', '8');
+    body.append('query', enrichedQuery);
+    body.append('k', '10'); // Retrieve more chunks for better context
     if (selectedCommand && selectedCommand !== 'ask') {
       body.append('command', selectedCommand);
     }
@@ -110,6 +121,16 @@ export const AskPanel = ({ workspaceId }: AskPanelProps) => {
       }
       
       const data = (await resp.json()) as AskResponse;
+      
+      // Check for LLM errors in the response metadata
+      const meta = (data as any)._meta;
+      if (meta?.error) {
+        // This is an LLM configuration error - show it as an error, not an answer
+        setError(meta.error_message || 'LLM error occurred. Check Settings.');
+        setResult(null);
+        return;
+      }
+      
       setResult(data);
       
       // Add to conversation history

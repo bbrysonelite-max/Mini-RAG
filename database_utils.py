@@ -340,3 +340,4 @@ BULK_DELETE_CHUNKS_QUERY = """
     WHERE id = ANY(%s::uuid[])
     RETURNING id
 """
+

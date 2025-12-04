@@ -39,3 +39,4 @@ echo ""
 python3 scripts/test_database.py
 
 
+

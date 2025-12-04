@@ -301,3 +301,4 @@ The Mini-RAG UI is now:
 - 🎯 **Intuitive:** Clear empty states and guidance
 
 **Ready for production and user testing!** 🎉
+

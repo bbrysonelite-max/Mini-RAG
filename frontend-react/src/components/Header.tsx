@@ -1,6 +1,13 @@
 import { useState, useEffect, type FC, useMemo } from 'react';
 
-type View = 'ask' | 'sources' | 'ingest' | 'admin' | 'assets' | 'history';
+type View = 'ask' | 'sources' | 'ingest' | 'admin' | 'assets' | 'history' | 'settings';
+
+interface HealthStatus {
+  status: string;
+  database: string;
+  index: string;
+  chunks_count: number;
+}
 
 interface Workspace {
   id: string;
@@ -21,6 +28,29 @@ const Header: FC<HeaderProps> = ({ active, onNavigate, currentWorkspace: propWor
   const [userName] = useState('Operator');
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+
+  // Fetch health status on mount and periodically
+  useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch('/health');
+        if (res.ok) {
+          const data = await res.json();
+          setHealth(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch health:', err);
+      } finally {
+        setHealthLoading(false);
+      }
+    };
+
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
 
   const loadWorkspaces = async () => {
     try {
@@ -106,8 +136,20 @@ const Header: FC<HeaderProps> = ({ active, onNavigate, currentWorkspace: propWor
     { key: 'ingest', label: 'Ingest' },
     { key: 'assets', label: 'Assets' },
     { key: 'history', label: 'History' },
+    { key: 'settings', label: 'Settings' },
     { key: 'admin', label: 'Admin' }
   ];
+
+  // Data status indicator helper
+  const getDataStatus = () => {
+    if (healthLoading) return { color: '#f59e0b', text: 'Loading...', icon: '◌' };
+    if (!health) return { color: '#ef4444', text: 'Offline', icon: '○' };
+    if (health.database !== 'healthy') return { color: '#ef4444', text: 'DB Error', icon: '○' };
+    if (health.chunks_count === 0) return { color: '#ef4444', text: 'No data', icon: '○' };
+    return { color: '#10b981', text: `${health.chunks_count} chunks`, icon: '●' };
+  };
+
+  const dataStatus = getDataStatus();
 
   return (
     <header className="app-header">
@@ -117,6 +159,40 @@ const Header: FC<HeaderProps> = ({ active, onNavigate, currentWorkspace: propWor
           <span>Second Brain</span>
           <strong>{activeWorkspace}</strong>
         </div>
+      </div>
+
+      {/* Data Status Indicator */}
+      <div 
+        className="data-status-indicator"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          padding: '0.5rem 1rem',
+          borderRadius: '9999px',
+          background: 'var(--bg-panel-solid)',
+          border: '1px solid var(--border-subtle)',
+          fontSize: '0.875rem',
+          fontWeight: 500,
+          cursor: 'pointer',
+          transition: 'all 0.2s ease'
+        }}
+        title={health ? `Database: ${health.database}, Index: ${health.index}` : 'System status'}
+        onClick={() => onNavigate('sources')}
+      >
+        <span 
+          style={{ 
+            color: dataStatus.color,
+            fontSize: '1rem',
+            lineHeight: 1,
+            animation: healthLoading ? 'pulse 1.5s infinite' : 'none'
+          }}
+        >
+          {dataStatus.icon}
+        </span>
+        <span style={{ color: dataStatus.color === '#10b981' ? 'var(--text-primary)' : dataStatus.color }}>
+          {dataStatus.text}
+        </span>
       </div>
 
       <div className="header-actions">

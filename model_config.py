@@ -28,6 +28,40 @@ class ModelConfig:
 # Default model configurations
 DEFAULT_MODELS: Dict[str, ModelConfig] = {
     # ------------------------
+    # Chat models (OpenAI) - Primary fallback
+    # ------------------------
+    "gpt-4o": ModelConfig(
+        id="gpt-4o",
+        provider="openai",
+        type="chat",
+        profile="balanced",
+        modelName="gpt-4o",
+        apiKeyRef="OPENAI_API_KEY",
+        maxTokens=4096,
+        costPer1kTokens=0.005,
+    ),
+    "gpt-4o-mini": ModelConfig(
+        id="gpt-4o-mini",
+        provider="openai",
+        type="chat",
+        profile="cheap",
+        modelName="gpt-4o-mini",
+        apiKeyRef="OPENAI_API_KEY",
+        maxTokens=4096,
+        costPer1kTokens=0.00015,
+    ),
+    "gpt-4-turbo": ModelConfig(
+        id="gpt-4-turbo",
+        provider="openai",
+        type="chat",
+        profile="premium",
+        modelName="gpt-4-turbo",
+        apiKeyRef="OPENAI_API_KEY",
+        maxTokens=4096,
+        costPer1kTokens=0.01,
+    ),
+    
+    # ------------------------
     # Chat models (Anthropic)
     # ------------------------
     "claude-3-haiku": ModelConfig(
@@ -38,7 +72,7 @@ DEFAULT_MODELS: Dict[str, ModelConfig] = {
         modelName="claude-3-haiku-20240307",
         apiKeyRef="ANTHROPIC_API_KEY",
         maxTokens=4096,
-        costPer1kTokens=0.001,  # example pricing
+        costPer1kTokens=0.001,
     ),
     "claude-3-sonnet": ModelConfig(
         id="claude-3-sonnet",
@@ -62,8 +96,7 @@ DEFAULT_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # ------------------------
-    # Embedding models
-    # (still OpenAI for now; easier to leave as-is)
+    # Embedding models (OpenAI)
     # ------------------------
     "text-embedding-3-small": ModelConfig(
         id="text-embedding-3-small",
@@ -89,11 +122,15 @@ DEFAULT_MODELS: Dict[str, ModelConfig] = {
 
 
 # Profile to model mappings (can be overridden via environment)
+# Default to OpenAI since most users have that API key
 DEFAULT_PROFILE_MAPPINGS: Dict[ModelProfile, str] = {
-    "cheap": os.getenv("MODEL_CHEAP", "claude-3-haiku"),
-    "balanced": os.getenv("MODEL_BALANCED", "claude-3-sonnet"),
-    "premium": os.getenv("MODEL_PREMIUM", "claude-3-opus"),
+    "cheap": os.getenv("MODEL_CHEAP", "gpt-4o-mini"),
+    "balanced": os.getenv("MODEL_BALANCED", "gpt-4o"),
+    "premium": os.getenv("MODEL_PREMIUM", "gpt-4-turbo"),
 }
+
+# Fallback chains - try these in order if primary fails
+PROVIDER_FALLBACK_CHAIN = ["openai", "anthropic"]
 
 
 # Default embedding model

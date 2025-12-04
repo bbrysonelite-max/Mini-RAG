@@ -60,3 +60,4 @@ export const APP_SHORTCUTS = {
   ESCAPE: { key: 'Escape', description: 'Close modal / clear focus', category: 'General' },
   HELP: { key: '?', shift: true, description: 'Show keyboard shortcuts', category: 'General' },
 };
+

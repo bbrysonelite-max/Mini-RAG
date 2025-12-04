@@ -171,3 +171,4 @@ export const SkeletonHistoryItem = () => (
     <Skeleton width="80%" height="16px" />
   </div>
 );
+

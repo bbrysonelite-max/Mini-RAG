@@ -263,3 +263,4 @@ CLOUD_TEMPLATES = {
         }
     }
 }
+

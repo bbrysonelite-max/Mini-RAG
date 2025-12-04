@@ -5,6 +5,7 @@ import { IngestPanel } from './components/IngestPanel';
 import { SourcesPanel } from './components/SourcesPanel';
 import { AssetsPanel } from './components/AssetsPanel';
 import { HistoryPanel } from './components/HistoryPanel';
+import { SettingsPanel } from './components/SettingsPanel';
 import { LoginForm } from './components/LoginForm';
 import { ToastContainer } from './components/ToastContainer';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcuts';
@@ -14,7 +15,7 @@ import HelpWidget from './components/HelpWidget';
 import { useToast } from './hooks/useToast';
 import { useKeyboardShortcuts, APP_SHORTCUTS, KeyboardShortcut } from './hooks/useKeyboardShortcuts';
 
-type View = 'ask' | 'sources' | 'ingest' | 'admin' | 'assets' | 'history';
+type View = 'ask' | 'sources' | 'ingest' | 'admin' | 'assets' | 'history' | 'settings';
 
 function App() {
   const [view, setView] = useState<View>('ask');
@@ -66,6 +67,8 @@ function App() {
         return <AssetsPanel workspaceId={currentWorkspace} />;
       case 'history':
         return <HistoryPanel workspaceId={currentWorkspace} />;
+      case 'settings':
+        return <SettingsPanel />;
       case 'ask':
       default:
         return <AskPanel workspaceId={currentWorkspace} />;

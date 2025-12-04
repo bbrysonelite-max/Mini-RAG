@@ -133,3 +133,4 @@ const maxRefinementLevel = 3;
 - [ ] UI feels smooth and intuitive
 
 
+

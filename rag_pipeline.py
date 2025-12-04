@@ -106,7 +106,7 @@ class RAGPipeline:
         topK_bm25: int = 20,
         topK_vector: int = 40,
         maxChunksForContext: int = 15,
-        useReranker: bool = False,
+        useReranker: bool = True,  # Enabled by default for best retrieval quality
         use_pgvector: bool = True
     ):
         """
@@ -652,7 +652,8 @@ class RAGPipeline:
             })
             
             # Map reranked scores back to candidates
-            score_map = {item.id: item.score for item in reranked}
+            # RerankResultItem is a TypedDict, access via dict keys
+            score_map = {item['id']: item['score'] for item in reranked}
             
             # Update scores and resort
             for candidate in candidates:
