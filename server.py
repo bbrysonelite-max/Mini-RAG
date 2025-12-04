@@ -1604,6 +1604,20 @@ async def db_status():
         return {"error": str(e), "DATABASE_URL_SET": bool(os.environ.get("DATABASE_URL"))}
 
 
+@app.get("/debug/llm-status")
+async def llm_status():
+    """Debug endpoint to check LLM configuration."""
+    return {
+        "MODEL_SERVICE": MODEL_SERVICE is not None,
+        "RAG_PIPELINE": RAG_PIPELINE is not None,
+        "RAG_PIPELINE_CHUNKS": len(RAG_PIPELINE.chunks) if RAG_PIPELINE else 0,
+        "GLOBAL_CHUNKS": len(CHUNKS),
+        "MODEL_SERVICE_AVAILABLE": MODEL_SERVICE_AVAILABLE,
+        "OPENAI_API_KEY_SET": bool(os.environ.get("OPENAI_API_KEY")),
+        "ANTHROPIC_API_KEY_SET": bool(os.environ.get("ANTHROPIC_API_KEY")),
+    }
+
+
 # Legal Pages Routes
 def _render_markdown_page(md_path: str, title: str) -> HTMLResponse:
     """Render a markdown file as an HTML page."""
