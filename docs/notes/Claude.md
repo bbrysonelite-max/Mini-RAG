@@ -22,4 +22,12 @@
    - The version MUST be visible in the app footer and at `/version` endpoint
    - Never push without updating the version first
 
+7. **CLEANUP AUTHORITY:** When the codebase becomes bloated (duplicate files, massive single files, redundant code), you have full authority to:
+   - Delete redundant documentation and status files
+   - Refactor large files (like server.py) into proper modules
+   - Remove duplicate scripts and utilities
+   - Consolidate scattered functionality
+   - Clean up without asking permission first - just do it and explain after
+   - Make the codebase maintainable and simple
+
 
