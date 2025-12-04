@@ -10,7 +10,6 @@ import os
 from typing import List, Optional
 import logging
 
-from correlation import build_observability_headers
 from config_utils import ensure_not_placeholder
 from model_service import (
     ModelService,
@@ -185,10 +184,8 @@ class ConcreteModelService(ModelService):
                 for msg in messages
             ]
             
-            headers = build_observability_headers()
-            request_client = client.with_options(extra_headers=headers) if headers else client
-
-            response = request_client.chat.completions.create(
+            # Use client directly - extra_headers can cause compatibility issues
+            response = client.chat.completions.create(
                 model=config.modelName,
                 messages=openai_messages,
                 max_tokens=max_tokens,
@@ -294,10 +291,8 @@ class ConcreteModelService(ModelService):
             raise RuntimeError("OpenAI client not available")
         
         try:
-            headers = build_observability_headers()
-            request_client = client.with_options(extra_headers=headers) if headers else client
-
-            response = request_client.embeddings.create(
+            # Use client directly - extra_headers can cause compatibility issues
+            response = client.embeddings.create(
                 model=config.modelName,
                 input=texts
             )

@@ -9,7 +9,7 @@
  * UPDATE THIS FILE WITH EVERY RELEASE
  */
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 export const BUILD_DATE = '2025-12-04';
 export const COMMIT_HASH = '366c2ae'; // Update with each release
 
@@ -17,7 +17,7 @@ export const COMMIT_HASH = '366c2ae'; // Update with each release
 export const VERSION_INFO = {
   major: 1,
   minor: 3,
-  patch: 0,
+  patch: 1,
   prerelease: null as string | null, // e.g., 'beta.1', 'rc.1'
   build: BUILD_DATE.replace(/-/g, ''),
 };
