@@ -3390,8 +3390,11 @@ api_v1.get("/admin/stats")(admin_stats)
 async def list_workspaces_for_user(request: Request):
     """List workspaces for the current user."""
     user, _, api_key_principal = await _resolve_auth_context(request, scopes=("read",), require=True)
-    if DB is None or USER_SERVICE is None:
+    if DB is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
+    # USER_SERVICE is only required in non-LOCAL_MODE
+    if not LOCAL_MODE and USER_SERVICE is None:
+        raise HTTPException(status_code=503, detail="User service not configured.")
     
     user_id = user.get("user_id") if user else None
     # LOCAL_MODE: allow listing all workspaces even if the placeholder user has no UUID
@@ -3434,18 +3437,37 @@ async def list_workspaces_for_user(request: Request):
 async def create_workspace(request: Request):
     """Create a new workspace."""
     user, _, api_key_principal = await _resolve_auth_context(request, scopes=("write",), require=True)
-    if DB is None or USER_SERVICE is None:
+    if DB is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
     
     user_id = user.get("user_id") if user else None
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User ID not found.")
     
-    # Get user's organization
-    orgs = await USER_SERVICE.list_user_organizations(user_id)
-    if not orgs:
-        raise HTTPException(status_code=400, detail="User must belong to an organization.")
-    org_id = orgs[0].get("organization_id")
+    # LOCAL_MODE: create a default organization if needed
+    if LOCAL_MODE:
+        # Ensure default organization exists
+        default_org = await DB.fetch_one(
+            "SELECT id FROM organizations WHERE slug = 'default'"
+        )
+        if not default_org:
+            default_org = await DB.fetch_one(
+                """
+                INSERT INTO organizations (name, slug, plan, billing_status)
+                VALUES ('Default Organization', 'default', 'free', 'active')
+                ON CONFLICT (slug) DO UPDATE SET name = 'Default Organization'
+                RETURNING id
+                """
+            )
+        org_id = default_org["id"]
+    else:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found.")
+        if USER_SERVICE is None:
+            raise HTTPException(status_code=503, detail="User service not configured.")
+        # Get user's organization
+        orgs = await USER_SERVICE.list_user_organizations(user_id)
+        if not orgs:
+            raise HTTPException(status_code=400, detail="User must belong to an organization.")
+        org_id = orgs[0].get("organization_id")
     
     body = await request.json()
     name = body.get("name", "").strip()
