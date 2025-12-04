@@ -107,13 +107,14 @@ class RAGPipeline:
         topK_vector: int = 40,
         maxChunksForContext: int = 15,
         useReranker: bool = True,  # Enabled by default for best retrieval quality
-        use_pgvector: bool = True
+        use_pgvector: bool = True,
+        chunks: Optional[List[Dict[str, Any]]] = None  # Pre-loaded chunks (from database)
     ):
         """
         Initialize RAG Pipeline.
-        
+
         Args:
-            chunks_path: Path to chunks JSONL file
+            chunks_path: Path to chunks JSONL file (fallback if chunks not provided)
             model_service: Optional ModelService instance for embeddings/reranking
             vector_store: Optional VectorStore instance for pgvector (auto-created if use_pgvector=True)
             topK_bm25: Number of top BM25 results to retrieve
@@ -121,6 +122,7 @@ class RAGPipeline:
             maxChunksForContext: Maximum chunks to return after filtering
             useReranker: Whether to use reranker (requires model_service)
             use_pgvector: Whether to use pgvector (True) or in-memory vectors (False)
+            chunks: Pre-loaded chunks list (from database) - if provided, skips file loading
         """
         self.chunks_path = chunks_path
         self.model_service = model_service
@@ -129,11 +131,11 @@ class RAGPipeline:
         self.maxChunksForContext = maxChunksForContext
         self.useReranker = useReranker
         self.use_pgvector = use_pgvector and PGVECTOR_AVAILABLE
-        
+
         # Load chunks and build BM25 index
         self.chunks: List[Dict[str, Any]] = []
         self.bm25_index: Optional[SimpleIndex] = None
-        
+
         # Vector storage (pgvector or in-memory fallback)
         if self.use_pgvector:
             self.vector_store_db = vector_store or (VectorStore() if PGVECTOR_AVAILABLE else None)
@@ -143,8 +145,12 @@ class RAGPipeline:
             self.vector_store_db = None
             self.vector_store_memory: Dict[str, List[float]] = {}  # In-memory storage
             self.db_context = None
-        
-        self._load_index()
+
+        # Use pre-loaded chunks if provided, otherwise load from file
+        if chunks is not None:
+            self.set_chunks(chunks)
+        else:
+            self._load_index()
         # Map from database chunk UUID -> raw chunk payload
         self.db_chunk_map: Dict[str, Dict[str, Any]] = {}
         self._embedding_tasks: List[asyncio.Task] = []
@@ -259,8 +265,24 @@ class RAGPipeline:
             "vector_store_size": embedded_count
         }
     
+    def set_chunks(self, chunks: List[Dict[str, Any]]) -> None:
+        """Set chunks directly and rebuild BM25 index.
+
+        Use this to update chunks from database without reloading from file.
+
+        Args:
+            chunks: List of chunk dictionaries
+        """
+        self.chunks = chunks or []
+        if self.chunks:
+            self.bm25_index = SimpleIndex(self.chunks)
+            logger.info(f"RAGPipeline: set {len(self.chunks)} chunks (from database)")
+        else:
+            self.bm25_index = None
+            logger.warning("RAGPipeline: set_chunks called with empty list")
+
     def _load_index(self) -> None:
-        """Load chunks and build BM25 index."""
+        """Load chunks from file and build BM25 index."""
         try:
             self.chunks = load_chunks(self.chunks_path)
             if self.chunks:

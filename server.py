@@ -1275,7 +1275,8 @@ async def startup_event():
 
     if MODEL_SERVICE is None:
         MODEL_SERVICE = _init_model_service()
-    RAG_PIPELINE = _init_rag_pipeline(MODEL_SERVICE)
+    # Pass the already-loaded CHUNKS to RAG pipeline (may be from DB or empty)
+    RAG_PIPELINE = _init_rag_pipeline(MODEL_SERVICE, chunks=CHUNKS if CHUNKS else None)
 
     if BACKGROUND_JOBS_ENABLED:
         BACKGROUND_QUEUE = BackgroundTaskQueue()
@@ -1471,16 +1472,18 @@ def _init_model_service():
         return None
 
 
-def _init_rag_pipeline(model_service) -> Optional[RAGPipeline]:
+def _init_rag_pipeline(model_service, chunks: Optional[List[Dict[str, Any]]] = None) -> Optional[RAGPipeline]:
     try:
         pipeline = RAGPipeline(
             chunks_path=CHUNKS_PATH,
             model_service=model_service,
             use_pgvector=False,
+            chunks=chunks,  # Pass pre-loaded chunks from database
         )
         logger.info(
-            "RAG pipeline initialized (llm_enabled=%s)",
+            "RAG pipeline initialized (llm_enabled=%s, chunks=%d)",
             bool(model_service),
+            len(chunks) if chunks else 0,
         )
         return pipeline
     except Exception as exc:
@@ -1489,10 +1492,12 @@ def _init_rag_pipeline(model_service) -> Optional[RAGPipeline]:
 
 
 def _refresh_rag_pipeline_index():
+    """Refresh RAG pipeline with current CHUNKS."""
     if not RAG_PIPELINE:
         return
+    # Update RAG pipeline with current in-memory chunks
     try:
-        RAG_PIPELINE._load_index()  # type: ignore[attr-defined]
+        RAG_PIPELINE.set_chunks(CHUNKS)
     except Exception as exc:
         logger.warning("Unable to refresh RAG pipeline index: %s", exc)
 
