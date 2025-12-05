@@ -321,8 +321,8 @@ class RAGPipeline:
         maxChunks = opts.get('maxChunksForContext', self.maxChunksForContext)
         useReranker = opts.get('useReranker', self.useReranker)
         
-        # Step 1: BM25 retrieval
-        bm25_candidates = await self._retrieve_bm25(query, topK_bm25)
+        # Step 1: BM25 retrieval - don't pass workspace_id to allow legacy chunks
+        bm25_candidates = await self._retrieve_bm25(query, topK_bm25, workspace_id=None)
         
         # Step 2: Vector retrieval (if model service available)
         vector_candidates = []
@@ -367,13 +367,14 @@ class RAGPipeline:
             }
         )
     
-    async def _retrieve_bm25(self, query: str, k: int) -> List[ChunkWithScore]:
+    async def _retrieve_bm25(self, query: str, k: int, workspace_id: Optional[str] = None) -> List[ChunkWithScore]:
         """Retrieve using BM25."""
         if not self.bm25_index:
             return []
         
         try:
-            results = self.bm25_index.search(query, k=k)
+            # Pass workspace_id to search for proper filtering
+            results = self.bm25_index.search(query, k=k, workspace_id=workspace_id)
             candidates = []
             for idx, score in results:
                 if idx < len(self.chunks):

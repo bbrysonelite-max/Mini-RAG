@@ -2265,19 +2265,30 @@ async def _process_query_with_llm(
         chunk_meta = entry.get("chunk", {}) or {}
         chunk_id = chunk_meta.get("id")
         raw_chunk = _get_chunk_by_id(chunk_id)
+        
+        # CRITICAL FIX: If _get_chunk_by_id fails, use chunk data from RAG pipeline directly
+        if raw_chunk is None:
+            # Fallback: create synthetic chunk from RAG pipeline data
+            raw_chunk = {
+                "id": chunk_id or f"rag-chunk-{idx}",
+                "content": chunk_meta.get("text", ""),
+                "source": {"type": "rag_pipeline", "id": chunk_id},
+                "metadata": {"chunk_index": idx}
+            }
+        
         raw_chunks.append(raw_chunk)
-        content = (chunk_meta.get("text") or (raw_chunk or {}).get("content") or "").strip()
+        content = (chunk_meta.get("text") or raw_chunk.get("content") or "").strip()
         citation = format_citation(raw_chunk) if raw_chunk else chunk_meta.get("id", "Unknown source")
         context_sections.append(f"Source {idx + 1}:\n{content}")
         citations.append(citation)
-        metadata = (raw_chunk or {}).get("metadata", {})
+        metadata = raw_chunk.get("metadata", {})
         chunk_details.append(
             {
                 "index": idx + 1,
                 "content": content,
                 "score": float(entry.get("score", 0.0)),
                 "citation": citation,
-                "source": (raw_chunk or {}).get("source", {}),
+                "source": raw_chunk.get("source", {}),
                 "metadata": {
                     "chunk_index": metadata.get("chunk_index"),
                     "chunk_count": metadata.get("chunk_count"),
@@ -2289,6 +2300,14 @@ async def _process_query_with_llm(
         )
 
     context_text = "\n\n".join(context_sections)
+    
+    # DEBUG: Log what context we're actually sending to LLM
+    logger.info(f"🔍 CONTEXT DEBUG: Retrieved {len(chunk_entries)} chunks")
+    logger.info(f"🔍 CONTEXT DEBUG: Context sections: {len(context_sections)}")
+    logger.info(f"🔍 CONTEXT DEBUG: Context text length: {len(context_text)} chars")
+    logger.info(f"🔍 CONTEXT DEBUG: First 200 chars of context: {context_text[:200]}...")
+    if not context_text.strip():
+        logger.error("🚨 CONTEXT DEBUG: CONTEXT IS EMPTY! This is the bug!")
     
     # Use command-specific system prompt if provided, otherwise use default
     effective_system_prompt = system_prompt if system_prompt else DEFAULT_SYSTEM_PROMPT

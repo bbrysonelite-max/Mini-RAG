@@ -105,6 +105,42 @@ Added FastAPI exception handlers for RAGError and general exceptions
 **Fix:** Removed `"path": CHUNKS_PATH` from stats response
 **Verification:** API responses don't expose internal file paths
 
+### Bug: Cannot Create Workspaces
+**Date:** 2025-12-04
+**File(s):** db_schema.sql, server.py
+**Symptoms:** Workspace creation fails with database error
+**Root Cause:** Missing database tables - workspace_settings, organizations, workspace_members tables not created
+**Fix:** 
+1. Run database schema: `psql $DATABASE_URL < db_schema.sql`
+2. Or use Alembic: `alembic upgrade head`
+3. Verify tables exist: `\dt` in psql
+4. Required tables:
+   - organizations
+   - workspaces
+   - workspace_members  
+   - workspace_settings
+   - user_organizations
+**Verification:** 
+- POST to `/api/v1/workspaces` with `{"name": "Test"}` should return 200
+- GET `/api/v1/workspaces` should list the workspace
+- Check browser console for errors
+
+### Bug: RAG Returns "I don't have enough information" for All Queries  
+**Date:** 2025-12-04  
+**File(s):** server.py, rag_pipeline.py, retrieval.py
+**Symptoms:** All questions return "I don't have enough information" even with chunks being retrieved (visible in UI)
+**Root Cause:** Two-part issue:
+1. Workspace filtering in BM25 search filtered out legacy chunks  
+2. Chunk ID mismatch between RAG pipeline and global CHUNKS lookup caused empty context
+**Fix:**
+1. Modified `_retrieve_bm25()` in rag_pipeline.py to pass `workspace_id=None`
+2. Added fallback in server.py `_process_query_with_llm()` to use RAG pipeline chunk data when `_get_chunk_by_id()` returns None
+3. Ensures context_text is populated even when chunk IDs don't match
+**Verification:**
+- Ask any question in the web UI  
+- Should return relevant answer with proper context
+- Retrieved chunks section should show chunks with content
+
 ### Bug Template
 When documenting a new bug, use this format:
 
