@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Local dev
+.env.local
+*.sqlite
+*.db
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Temp files
+*.tmp
+tmp/
+temp/
+
+# Node (already built in separate stage)
+frontend-react/node_modules/
+frontend-react/dist/
+frontend-react/.next/
+
+# Documentation (not needed in container)
+docs/notes/
+*.md
+!README.md
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Claude agents (not needed in container)
+.claude/
+
