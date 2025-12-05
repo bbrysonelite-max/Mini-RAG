@@ -2348,10 +2348,13 @@ async def _process_query_with_llm(
             {"role": "user", "content": user_prompt},
         ]
     else:
-        # Default RAG behavior
+        # Default RAG behavior - following Anthropic contextual retrieval guidance
         user_prompt = (
-            "Use only the context below to answer the user's question. "
-            "If the context does not contain the answer, reply with \"I don't have enough information.\""
+            "Answer the user's question using the context below. "
+            "Be helpful and synthesize information from the context when possible. "
+            "Cite your sources by referencing which part of the context you used. "
+            "If the context is completely unrelated to the question, acknowledge what context you have "
+            "and explain what additional information would help answer the question."
             f"\n\nContext:\n{context_text}\n\nQuestion:\n{query}"
         )
         messages: List[Message] = [

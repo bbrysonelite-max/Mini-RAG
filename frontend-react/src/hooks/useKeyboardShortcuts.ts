@@ -61,3 +61,4 @@ export const APP_SHORTCUTS = {
   HELP: { key: '?', shift: true, description: 'Show keyboard shortcuts', category: 'General' },
 };
 
+

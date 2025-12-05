@@ -695,7 +695,7 @@ class RAGPipeline:
     def _should_abstain(
         self,
         chunks: List[ChunkWithScore],
-        min_relevance_threshold: float = 0.3
+        min_relevance_threshold: float = 0.1  # Lowered from 0.3 - let LLM decide relevance
     ) -> Tuple[bool, Optional[str]]:
         """
         Determine if retrieval should abstain due to low relevance.
