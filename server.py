@@ -2263,24 +2263,47 @@ async def _process_query_with_llm(
     raw_chunks = []
     for idx, entry in enumerate(chunk_entries[:k]):
         chunk_meta = entry.get("chunk", {}) or {}
-        chunk_id = chunk_meta.get("id")
-        raw_chunk = _get_chunk_by_id(chunk_id)
         
-        # CRITICAL FIX: If _get_chunk_by_id fails, use chunk data from RAG pipeline directly
-        if raw_chunk is None:
-            # Fallback: create synthetic chunk from RAG pipeline data
+        # BRUTAL DEBUG: Log exactly what we're getting
+        logger.error(f"🔍 ENTRY {idx}: {entry}")
+        logger.error(f"🔍 CHUNK_META {idx}: {chunk_meta}")
+        logger.error(f"🔍 CHUNK_META KEYS: {list(chunk_meta.keys())}")
+        
+        # Try every possible way to get content
+        content = (
+            chunk_meta.get("text", "") or 
+            chunk_meta.get("content", "") or
+            entry.get("text", "") or
+            entry.get("content", "") or
+            ""
+        ).strip()
+        
+        logger.error(f"🔍 CONTENT {idx}: '{content[:100]}...' (length: {len(content)})")
+        
+        # Fallback to ID lookup only if we have nothing
+        if not content:
+            chunk_id = chunk_meta.get("id")
+            raw_chunk = _get_chunk_by_id(chunk_id)
+            if raw_chunk:
+                content = raw_chunk.get("content", "").strip()
+            raw_chunks.append(raw_chunk)
+        else:
+            # Create chunk object directly from retrieved data
             raw_chunk = {
-                "id": chunk_id or f"rag-chunk-{idx}",
-                "content": chunk_meta.get("text", ""),
-                "source": {"type": "rag_pipeline", "id": chunk_id},
+                "id": chunk_meta.get("id", f"direct-{idx}"),
+                "content": content,
+                "source": {"type": "direct_retrieval"},
                 "metadata": {"chunk_index": idx}
             }
+            raw_chunks.append(raw_chunk)
         
-        raw_chunks.append(raw_chunk)
-        content = (chunk_meta.get("text") or raw_chunk.get("content") or "").strip()
-        citation = format_citation(raw_chunk) if raw_chunk else chunk_meta.get("id", "Unknown source")
-        context_sections.append(f"Source {idx + 1}:\n{content}")
-        citations.append(citation)
+        # Only add to context if we have actual content
+        if content:
+            citation = format_citation(raw_chunk) if raw_chunk else f"Source {idx + 1}"
+            context_sections.append(f"Source {idx + 1}:\n{content}")
+            citations.append(citation)
+        else:
+            logger.error(f"🚨 NO CONTENT FOR CHUNK {idx}! This is why context is empty!")
         metadata = raw_chunk.get("metadata", {})
         chunk_details.append(
             {
