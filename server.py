@@ -319,6 +319,8 @@ async def _reload_chunks_from_db() -> int:
     - Global INDEX (for BM25 search)
     - RAG_PIPELINE.chunks (for hybrid retrieval)
     
+    AUTOMATIC FALLBACK: If database is empty but JSONL exists, loads from JSONL.
+    
     Returns:
         Number of chunks loaded, or 0 if failed
     """
@@ -336,6 +338,12 @@ async def _reload_chunks_from_db() -> int:
     try:
         chunks_from_db = await load_chunks_from_db(store)
         
+        # AUTOMATIC FALLBACK: If database is empty, try JSONL
+        if not chunks_from_db and os.path.exists(CHUNKS_PATH):
+            logger.warning(f"⚠ Database returned 0 chunks, falling back to JSONL: {CHUNKS_PATH}")
+            chunks_from_db = load_chunks(CHUNKS_PATH)
+            logger.info(f"✓ Fallback loaded {len(chunks_from_db)} chunks from JSONL")
+        
         async with _get_index_lock():
             CHUNKS = chunks_from_db or []
             CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
@@ -348,11 +356,27 @@ async def _reload_chunks_from_db() -> int:
         else:
             logger.warning("RAG pipeline not initialized - chunks loaded but pipeline needs restart")
         
-        logger.info(f"✓ Reloaded {len(CHUNKS)} chunks from database")
+        logger.info(f"✓ Reloaded {len(CHUNKS)} chunks (source: {'database' if chunks_from_db else 'fallback'})")
         return len(CHUNKS)
     
     except Exception as e:
         logger.error(f"✗ Failed to reload chunks from database: {e}", exc_info=True)
+        # FALLBACK on error
+        if os.path.exists(CHUNKS_PATH):
+            logger.warning(f"⚠ Attempting JSONL fallback after database error")
+            try:
+                chunks_from_file = load_chunks(CHUNKS_PATH)
+                async with _get_index_lock():
+                    CHUNKS = chunks_from_file
+                    CHUNK_ID_MAP = {c.get("id"): c for c in CHUNKS if c.get("id")}
+                    INDEX = SimpleIndex(CHUNKS)
+                if RAG_PIPELINE:
+                    RAG_PIPELINE.set_chunks(CHUNKS)
+                logger.info(f"✓ Fallback successful: loaded {len(CHUNKS)} chunks from JSONL")
+                return len(CHUNKS)
+            except Exception as fallback_error:
+                logger.error(f"✗ Fallback also failed: {fallback_error}")
+        
         CHUNKS = []
         INDEX = SimpleIndex([])
         if RAG_PIPELINE:
@@ -1585,9 +1609,30 @@ async def health_check():
         if os.path.exists(CHUNKS_PATH):
             file_chunks_count = _count_lines(CHUNKS_PATH)
         
-        # Use database count if available, otherwise file count
-        chunks_count = db_chunks_count if db_chunks_count > 0 else file_chunks_count
+        # Determine active chunk source
+        chunk_source = "unknown"
+        chunks_count = 0
+        if USE_DB_CHUNKS:
+            if db_chunks_count > 0:
+                chunk_source = "database"
+                chunks_count = db_chunks_count
+            elif file_chunks_count > 0:
+                chunk_source = "fallback_jsonl"
+                chunks_count = file_chunks_count
+            else:
+                chunk_source = "empty"
+        else:
+            chunk_source = "jsonl"
+            chunks_count = file_chunks_count
+        
         index_status = "healthy" if chunks_count > 0 else "empty"
+        
+        # Detect potential issues
+        warnings = []
+        if USE_DB_CHUNKS and db_chunks_count == 0 and file_chunks_count > 0:
+            warnings.append(f"Database empty but JSONL has {file_chunks_count} chunks - using fallback")
+        if db_chunks_count > 0 and file_chunks_count > 0 and db_chunks_count != file_chunks_count:
+            warnings.append(f"Chunk count mismatch: DB={db_chunks_count}, JSONL={file_chunks_count}")
         
         # Check LLM provider availability
         openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
@@ -1600,14 +1645,18 @@ async def health_check():
             "database": db_status,
             "index": index_status,
             "chunks_count": chunks_count,
+            "chunk_source": chunk_source,
             "db_chunks": db_chunks_count,
             "file_chunks": file_chunks_count,
+            "use_db_chunks": USE_DB_CHUNKS,
             "auth_available": AUTH_AVAILABLE,
             "llm_available": llm_available,
             "openai_configured": openai_configured,
             "anthropic_configured": anthropic_configured,
             "cohere_configured": cohere_configured,
         }
+        if warnings:
+            response["warnings"] = warnings
         asyncio.create_task(_ping_healthchecks(True, response))
         return response
     except Exception as e:
