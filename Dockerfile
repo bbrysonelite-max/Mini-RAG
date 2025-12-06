@@ -1,6 +1,6 @@
 # CACHE BUSTER - Change this value to force Railway to rebuild from scratch
-# Last updated: 2025-12-05 v1.3.2
-ARG CACHE_BUST=v1.3.2
+# Last updated: 2025-12-06 v1.3.3
+ARG CACHE_BUST=v1.3.3
 
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend-react

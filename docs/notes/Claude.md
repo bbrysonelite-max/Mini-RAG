@@ -2,6 +2,24 @@
 
 ## rules
 
+## MANDATORY VERSION CONTROL - NEVER VIOLATE
+
+**Every single git commit to main MUST increment the version number in version.py BEFORE committing.**
+
+No exceptions. No "I'll do it later". No shortcuts.
+
+Process:
+1. Make code changes
+2. Update version.py (increment PATCH for fixes, MINOR for features)
+3. Update BUILD_DATE to today
+4. Commit with version number in message
+5. Update COMMIT_HASH in version.py to the new commit hash
+6. Amend commit or make second commit with hash
+
+This prevents: "What version is running?", "Did my fix deploy?", "Why is production different than code?"
+
+---
+
 ## Never tell the user that a bug is fixed without end to end testing. Never ignore this rule.
 
 
