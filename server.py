@@ -2437,7 +2437,8 @@ def _process_query_legacy(query: str, k: int, user: Dict[str, Any], workspace_id
     ensure_index()
     user_id = user.get("user_id") if user else None
     ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
-    top = [CHUNKS[i] for i, _ in ranked]
+    # FIX 1: ranked now returns (chunk_id, score) instead of (idx, score)
+    top = [CHUNK_ID_MAP.get(chunk_id) for chunk_id, _ in ranked if chunk_id in CHUNK_ID_MAP]
     snippets = [c.get("content", "").strip() for c in top[:3]]
     cites = [format_citation(c) for c in top[:3]]
     text = " ".join(snippets)
@@ -3364,10 +3365,13 @@ async def search_source(request: Request, query: str, source_id: str = None, k: 
             return {"chunks": [], "scores": []}
         temp_index = SimpleIndex(source_chunks)
         ranked = temp_index.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
-        results = [(source_chunks[i], score) for i, score in ranked]
+        # FIX 1: ranked returns (chunk_id, score), need to lookup chunks
+        chunk_id_to_chunk = {c.get("id"): c for c in source_chunks if c.get("id")}
+        results = [(chunk_id_to_chunk.get(chunk_id), score) for chunk_id, score in ranked if chunk_id in chunk_id_to_chunk]
     else:
         ranked = INDEX.search(query, k=k, user_id=user_id, workspace_id=workspace_id)
-        results = [(CHUNKS[i], score) for i, score in ranked]
+        # FIX 1: ranked returns (chunk_id, score), use CHUNK_ID_MAP
+        results = [(CHUNK_ID_MAP.get(chunk_id), score) for chunk_id, score in ranked if chunk_id in CHUNK_ID_MAP]
     
     chunks_with_scores = []
     for chunk, score in results:

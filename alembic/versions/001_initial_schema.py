@@ -298,3 +298,4 @@ def downgrade() -> None:
     # Note: We don't drop the pgvector extension as it might be used by other applications
 
 
+

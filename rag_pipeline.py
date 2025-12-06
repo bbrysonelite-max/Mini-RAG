@@ -376,9 +376,15 @@ class RAGPipeline:
             # Pass workspace_id to search for proper filtering
             results = self.bm25_index.search(query, k=k, workspace_id=workspace_id)
             candidates = []
-            for idx, score in results:
-                if idx < len(self.chunks):
-                    chunk_data = self.chunks[idx]
+            # FIX 1: results now return (chunk_id, score) instead of (idx, score)
+            for chunk_id, score in results:
+                # Find chunk by ID
+                chunk_data = None
+                for c in self.chunks:
+                    if c.get("id") == chunk_id:
+                        chunk_data = c
+                        break
+                if chunk_data:
                     candidates.append(ChunkWithScore(
                         chunk=self._convert_to_chunk(chunk_data),
                         score=float(score),

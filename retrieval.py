@@ -18,6 +18,7 @@ def load_chunks(path):
 class SimpleIndex:
     def __init__(self,chunks):
         self.chunks=chunks if chunks else []
+        self.chunk_id_map = {c.get("id"): i for i, c in enumerate(self.chunks) if c.get("id")}
         if not self.chunks:
             self.bm25 = None
             return
@@ -32,7 +33,8 @@ class SimpleIndex:
         ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
         
         if not user_id and not workspace_id:
-            return ranked[:k]
+            # FIX 1: Return chunk IDs instead of indices
+            return [(self.chunks[idx].get("id"), score) for idx, score in ranked[:k]]
 
         filtered = []
         for idx, score in ranked:
@@ -49,7 +51,8 @@ class SimpleIndex:
                 if chunk_user_id is not None and chunk_user_id != user_id:
                     continue
 
-            filtered.append((idx, score))
+            # FIX 1: Return chunk ID instead of index
+            filtered.append((chunk.get("id"), score))
             if len(filtered) >= k:
                 break
         return filtered
