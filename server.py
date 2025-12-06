@@ -1618,30 +1618,9 @@ async def health_check():
         if os.path.exists(CHUNKS_PATH):
             file_chunks_count = _count_lines(CHUNKS_PATH)
         
-        # Determine active chunk source
-        chunk_source = "unknown"
-        chunks_count = 0
-        if USE_DB_CHUNKS:
-            if db_chunks_count > 0:
-                chunk_source = "database"
-                chunks_count = db_chunks_count
-            elif file_chunks_count > 0:
-                chunk_source = "fallback_jsonl"
-                chunks_count = file_chunks_count
-            else:
-                chunk_source = "empty"
-        else:
-            chunk_source = "jsonl"
-            chunks_count = file_chunks_count
-        
+        # Use database count if available, otherwise file count
+        chunks_count = db_chunks_count if db_chunks_count > 0 else file_chunks_count
         index_status = "healthy" if chunks_count > 0 else "empty"
-        
-        # Detect potential issues
-        warnings = []
-        if USE_DB_CHUNKS and db_chunks_count == 0 and file_chunks_count > 0:
-            warnings.append(f"Database empty but JSONL has {file_chunks_count} chunks - using fallback")
-        if db_chunks_count > 0 and file_chunks_count > 0 and db_chunks_count != file_chunks_count:
-            warnings.append(f"Chunk count mismatch: DB={db_chunks_count}, JSONL={file_chunks_count}")
         
         # Check LLM provider availability
         openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
@@ -1654,18 +1633,14 @@ async def health_check():
             "database": db_status,
             "index": index_status,
             "chunks_count": chunks_count,
-            "chunk_source": chunk_source,
             "db_chunks": db_chunks_count,
             "file_chunks": file_chunks_count,
-            "use_db_chunks": USE_DB_CHUNKS,
             "auth_available": AUTH_AVAILABLE,
             "llm_available": llm_available,
             "openai_configured": openai_configured,
             "anthropic_configured": anthropic_configured,
             "cohere_configured": cohere_configured,
         }
-        if warnings:
-            response["warnings"] = warnings
         asyncio.create_task(_ping_healthchecks(True, response))
         return response
     except Exception as e:
