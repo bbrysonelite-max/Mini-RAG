@@ -3725,15 +3725,16 @@ async def create_workspace(request: Request):
     
     workspace_id = workspace_row["id"]
     
-    # Add user as owner
-    await DB.execute(
-        """
-        INSERT INTO workspace_members (workspace_id, user_id, role)
-        VALUES ($1, $2, 'owner')
-        ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'owner'
-        """,
-        (workspace_id, user_id)
-    )
+    # Add user as owner (skip for LOCAL_MODE placeholder user)
+    if not _is_local_mode_user(user_id):
+        await DB.execute(
+            """
+            INSERT INTO workspace_members (workspace_id, user_id, role)
+            VALUES ($1, $2, 'owner')
+            ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'owner'
+            """,
+            (workspace_id, user_id)
+        )
     
     # Create workspace settings
     await DB.execute(
