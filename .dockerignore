@@ -52,10 +52,11 @@ frontend-react/node_modules/
 frontend-react/dist/
 frontend-react/.next/
 
-# Documentation (not needed in container)
+# Documentation (keep essential docs)
 docs/notes/
-*.md
-!README.md
+# Don't exclude all .md files - some might be needed
+# *.md
+# !README.md
 
 # Test files
 tests/
