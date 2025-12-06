@@ -1,8 +1,16 @@
-import { type FC } from 'react';
-import { VERSION_WITH_BUILD } from '../version';
+import { type FC, useState, useEffect } from 'react';
 
 const Footer: FC = () => {
   const currentYear = new Date().getFullYear();
+  const [versionInfo, setVersionInfo] = useState('...');
+
+  useEffect(() => {
+    // Fetch version dynamically from API
+    fetch('/version')
+      .then(res => res.json())
+      .then(data => setVersionInfo(data.full_version || 'unknown'))
+      .catch(() => setVersionInfo('unknown'));
+  }, []);
 
   return (
     <footer className="app-footer">
@@ -141,7 +149,7 @@ const Footer: FC = () => {
           © {currentYear} <strong>Alien Probe Reports</strong>. All rights reserved.
         </p>
         <p className="footer-version">
-          Version {VERSION_WITH_BUILD}
+          Version {versionInfo}
         </p>
         <div className="footer-social">
           <a 
