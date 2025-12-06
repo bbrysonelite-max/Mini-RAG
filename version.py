@@ -9,9 +9,9 @@ VERSIONING RULES:
 UPDATE THIS FILE WITH EVERY RELEASE
 """
 
-VERSION = "1.3.1"
-BUILD_DATE = "2025-12-04"
-COMMIT_HASH = "366c2ae"  # Updated after commit
+VERSION = "1.3.2"
+BUILD_DATE = "2025-12-05"
+COMMIT_HASH = "325f8b4"  # Fix 1: ID Wiring Restoration
 
 # Version info dict for API responses
 VERSION_INFO = {
