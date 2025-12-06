@@ -11,7 +11,7 @@ UPDATE THIS FILE WITH EVERY RELEASE
 
 VERSION = "1.3.4"
 BUILD_DATE = "2025-12-06"
-COMMIT_HASH = "8d226b9"  # Frontend version sync fix
+COMMIT_HASH = "f4db3a9"  # Frontend version sync + strict version control
 
 # Version info dict for API responses
 VERSION_INFO = {
