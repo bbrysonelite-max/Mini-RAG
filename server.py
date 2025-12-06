@@ -614,6 +614,15 @@ def _ensure_not_placeholder(
 
     return value
 
+# Generate SECRET_KEY if not set - Railway should have real one in env vars
+import secrets as secrets_module
+if not os.getenv("SECRET_KEY") or os.getenv("SECRET_KEY") in SECRET_KEY_PLACEHOLDERS:
+    if not allow_insecure_defaults():
+        # Generate a random secret key for this session if Railway doesn't have one set
+        generated_key = secrets_module.token_hex(32)
+        os.environ["SECRET_KEY"] = generated_key
+        print(f"⚠ SECRET_KEY not configured - generated temporary session key")
+
 SECRET_KEY_VALUE = ensure_not_placeholder(
     "SECRET_KEY",
     os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY),
