@@ -1412,24 +1412,15 @@ def _count_lines(path):
     global _chunk_count_cache, _chunk_count_stamp
     
     if USE_DB_CHUNKS:
-        # Count chunks in database
-        store = _get_vector_store()
-        if store:
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're in an async context, create a task
-                    future = asyncio.create_task(load_chunks_from_db(store))
-                    chunks = asyncio.run_coroutine_threadsafe(future, loop).result()
-                else:
-                    chunks = asyncio.run(load_chunks_from_db(store))
-                count = len(chunks)
-                CHUNK_COUNT_GAUGE.set(count)
-                _chunk_count_cache = count
-                return count
-            except Exception as e:
-                logger.warning(f"Failed to count chunks from database: {e}")
+        # Count chunks in database - use in-memory CHUNKS as cache
+        # Async database queries can't be called from sync function
+        if CHUNKS:
+            count = len(CHUNKS)
+            CHUNK_COUNT_GAUGE.set(count)
+            _chunk_count_cache = count
+            return count
+        # If CHUNKS not loaded yet, return 0
+        return 0
     
     # Fallback to file counting
     try:
